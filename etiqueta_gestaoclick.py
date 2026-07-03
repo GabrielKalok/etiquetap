@@ -20,6 +20,7 @@ CACHE_FILE    = os.path.join(BASE_DIR, "produtos_cache.json")
 CACHE_FILE_PG = os.path.join(BASE_DIR, "produtos_cache_linkpro.json")
 HIST_FILE     = os.path.join(BASE_DIR, "historico.json")
 LAYOUTS_FILE  = os.path.join(BASE_DIR, "layouts_salvos.json")
+LOG_FILE      = os.path.join(BASE_DIR, "erros.log")
 
 # ── Conversão mm ↔ dots ──────────────────────────────────────────────────────
 def mm_para_dots(mm, dpi=203):
@@ -132,8 +133,8 @@ DEFAULT_CFG = {
     "config_password": "t4p68X",
     "pg_host": "localhost",
     "pg_port": "5432",
-    "pg_user": "parceiro",
-    "pg_password": "qwe123",
+    "pg_user": "",
+    "pg_password": "",
     "pg_database": "InkDB",
     "dpi": DPI_PADRAO,
     # layout salvo no formato mm
@@ -775,31 +776,14 @@ def carregar_layouts_salvos():
     if os.path.exists(LAYOUTS_FILE):
         with open(LAYOUTS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    # Inicializa com os presets padrão
-    salvos = {}
-    for nome_p, preset in LAYOUT_PRESETS.items():
-        salvos[nome_p] = {
-            "largura_mm": preset["largura_mm"], "altura_mm": preset["altura_mm"],
-            "espaco_mm": preset.get("espaco_mm", 0.0),
-            "papel_largura_mm": preset.get("papel_largura_mm", preset["largura_mm"]),
-            "num_colunas": preset.get("num_colunas", 1),
-            "cartela_esq_mm": preset.get("cartela_esq_mm", 0.0),
-            "cartela_dir_mm": preset.get("cartela_dir_mm", 0.0),
-            "cartela_topo_mm": preset.get("cartela_topo_mm", 0.0),
-            "cartela_base_mm": preset.get("cartela_base_mm", 0.0),
-            "gap_col_mm": preset.get("gap_col_mm", 0.0),
-            "dpi": preset.get("dpi", 203),
-            "elementos": json.loads(json.dumps(preset["elementos"])),
-        }
-    salvar_layouts_salvos(salvos)
-    return salvos
+    return {}   # começa vazio — usuário cria seus próprios layouts
 
 def salvar_layouts_salvos(d):
     with open(LAYOUTS_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "1.4.0"
+_VERSION_BASE = "1.5.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -964,6 +948,19 @@ def sincronizar_produtos_pg(cfg, progress_q, cancel_event):
         progress_q.put(("concluido", (len(dic), meta["atualizado_em"])))
     except Exception as e:
         progress_q.put(("erro", str(e)))
+
+
+
+def registrar_erro(origem, mensagem):
+    """Salva erro em arquivo de log para suporte."""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%d/%m/%Y %H:%M:%S')}] [{origem}] {mensagem}\n")
+    except Exception:
+        pass
+
+
+
 
 
 class App:
@@ -1235,39 +1232,37 @@ class App:
         inner_busca = ttk.Frame(card_busca.body, style="Panel.TFrame")
         inner_busca.pack(fill="x", padx=16, pady=14)
 
-        ttk.Label(inner_busca, text="CÓDIGO DO PRODUTO", style="SectionTitle.TLabel",
-                  background=COR["surface2"]).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(inner_busca, text="BUSCAR PRODUTO", style="SectionTitle.TLabel",
+                  background=COR["surface2"]).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(inner_busca,
+                  text="Código, cód. de barras ou nome do produto",
+                  style="Muted.TLabel", background=COR["surface2"]
+                  ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 6))
+
+        # Campo unificado de busca
+        self.entry_cod = ttk.Entry(inner_busca, width=28, font=("Segoe UI", 11))
+        self.entry_cod.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(0, 0))
+        self.entry_cod.bind("<Return>", lambda e: self._busca_unificada())
+        # Alias para compatibilidade com código existente
+        self.entry_busca_nome = self.entry_cod
+
+        ttk.Button(inner_busca, text="🔍", style="Secondary.TButton", width=3,
+                   command=self._abrir_busca_nome).grid(row=2, column=1, sticky="w",
+                                                         padx=(0, 8))
+
         ttk.Label(inner_busca, text="QTD", style="SectionTitle.TLabel",
-                  background=COR["surface2"]).grid(row=0, column=1, sticky="w", padx=(0, 10))
+                  background=COR["surface2"]).grid(row=2, column=2, sticky="w", padx=(0, 6))
 
-        self.entry_cod = ttk.Entry(inner_busca, width=18, font=("Segoe UI", 11))
-        self.entry_cod.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
-        self.entry_cod.bind("<Return>", lambda e: self.adicionar_produto())
-
-        self.spin_qtd = ttk.Spinbox(inner_busca, from_=1, to=999, width=6, font=("Segoe UI", 11))
+        self.spin_qtd = ttk.Spinbox(inner_busca, from_=1, to=999, width=5, font=("Segoe UI", 11))
         self.spin_qtd.set(1)
-        self.spin_qtd.grid(row=1, column=1, sticky="w", padx=(0, 10), pady=(4, 0))
+        self.spin_qtd.grid(row=2, column=3, sticky="w", padx=(0, 8))
 
         ttk.Button(inner_busca, text="＋  Adicionar", style="Primary.TButton",
-                   command=self.adicionar_produto).grid(row=1, column=2, sticky="w", pady=(4, 0))
+                   command=self.adicionar_produto).grid(row=2, column=4, sticky="w")
 
         self.lbl_status = ttk.Label(inner_busca, text="", style="StatusMuted.TLabel",
                                      background=COR["surface2"])
-        self.lbl_status.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-
-        ttk.Separator(inner_busca, orient="horizontal").grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(14, 12))
-
-        ttk.Label(inner_busca, text="BUSCAR POR NOME", style="SectionTitle.TLabel",
-                  background=COR["surface2"]).grid(row=4, column=0, columnspan=2, sticky="w")
-
-        self.entry_busca_nome = ttk.Entry(inner_busca, width=32, font=("Segoe UI", 10))
-        self.entry_busca_nome.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self.entry_busca_nome.bind("<Return>", lambda e: self._abrir_busca_nome())
-
-        ttk.Button(inner_busca, text="🔍  Buscar", style="Secondary.TButton",
-                   command=self._abrir_busca_nome).grid(row=5, column=2, sticky="w",
-                                                         padx=(10, 0), pady=(4, 0))
+        self.lbl_status.grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
         card_busca.finalize_fixed_size(extra_pad_x=16, extra_pad_y=16)
 
@@ -1446,7 +1441,7 @@ class App:
         "preco":      {"label": "R$ Preço",     "cor": "#E4483F", "cor_txt": "white"},
         "codigo":     {"label": "Código",       "cor": "#B98900", "cor_txt": "white"},
         "texto_fixo": {"label": "Texto fixo",   "cor": "#9C27B0", "cor_txt": "white"},
-        "barcode":    {"label": "▐▌ Barcode",    "cor": "#212121", "cor_txt": "white"},
+        "barcode":    {"label": "Cód. de barras",    "cor": "#212121", "cor_txt": "white"},
     }
 
     # Nome amigável e step de tamanho para cada elemento
@@ -1471,10 +1466,11 @@ class App:
         self._combo_layouts = ttk.Combobox(barra_lay, textvariable=self._var_layout_sel,
                                             width=22, state="readonly")
         self._combo_layouts.pack(side="left", padx=(0,8))
+        # 1 clique no combo já aplica o layout
+        self._combo_layouts.bind("<<ComboboxSelected>>",
+                                  lambda e: self._carregar_layout_selecionado())
         self._atualizar_combo_layouts()
-        ttk.Button(barra_lay, text="Carregar",
-                   command=self._carregar_layout_selecionado).pack(side="left", padx=2)
-        ttk.Button(barra_lay, text="Salvar como...",
+        ttk.Button(barra_lay, text="💾 Salvar como...",
                    command=self._salvar_layout_como).pack(side="left", padx=2)
         ttk.Button(barra_lay, text="🗑 Excluir",
                    command=self._excluir_layout_salvo).pack(side="left", padx=2)
@@ -1680,9 +1676,11 @@ class App:
     def _atualizar_combo_layouts(self):
         nomes = sorted(self._layouts_salvos.keys())
         self._combo_layouts["values"] = nomes
-        if nomes:
-            # Seleciona o que tiver nome mais próximo do atual, senão o primeiro
-            self._var_layout_sel.set(nomes[0])
+        atual = self._var_layout_sel.get()
+        if not nomes:
+            self._var_layout_sel.set("")
+        elif atual not in nomes:
+            self._var_layout_sel.set("")
 
     def _carregar_layout_selecionado(self):
         nome = self._var_layout_sel.get()
@@ -1723,7 +1721,7 @@ class App:
         self._salvar_layout()
         self._redesenhar_editor_com_dims()
         self._atualizar_preview_etiqueta()
-        messagebox.showinfo("Layout carregado", f"Layout '{nome}' aplicado com sucesso!")
+        self.lbl_cache.config(text=f"✅ Layout '{nome}' aplicado")  # silencioso
 
     def _salvar_layout_como(self):
         win = tk.Toplevel(self.root)
@@ -2391,7 +2389,7 @@ class App:
             ("Nome da empresa:",       "empresa",     ""),
             ("Host / IP do servidor:", "pg_host",     "localhost"),
             ("Porta:",                 "pg_port",     "5432"),
-            ("Usuário:",               "pg_user",     "parceiro"),
+            ("Usuário:",               "pg_user",     ""),
             ("Senha:",                 "pg_password", ""),
             ("Banco de dados:",        "pg_database", "InkDB"),
         ]
@@ -2731,6 +2729,7 @@ class App:
                 elif tipo == "erro":
                     self._atualizar_label_cache()
                     origem = "Sync periódico" if periodico else "Sync automático"
+                    registrar_erro(origem, dado)
                     messagebox.showwarning("Erro na sincronização",
                                            f"{origem} falhou:\n{dado}\n\n"
                                            "Verifique tokens e conexão.")
@@ -2776,6 +2775,7 @@ class App:
                     return
                 elif tipo == "erro":
                     win.destroy()
+                    registrar_erro("Sincronização", dado)
                     messagebox.showerror("Erro na sincronização", dado)
                     return
                 elif tipo == "cancelado":
@@ -2793,10 +2793,21 @@ class App:
             return
         self._abrir_busca_nome()
 
-    def _abrir_busca_nome(self):
-        termo = self.entry_busca_nome.get().strip().lower()
+    def _busca_unificada(self):
+        """Enter no campo unificado: tenta adicionar por código; se não achar, abre busca."""
+        termo = self.entry_cod.get().strip()
         if not termo:
+            self._abrir_busca_nome()
             return
+        # Verifica se parece código (só números ou alfanumérico curto sem espaço)
+        pc = self.cache.get("produtos", {})
+        if termo in pc or (termo.isdigit() and len(termo) <= 15):
+            self.adicionar_produto()
+        else:
+            self._abrir_busca_nome()
+
+    def _abrir_busca_nome(self):
+        termo = self.entry_cod.get().strip().lower()
 
         produtos_cache = self.cache.get("produtos", {})
         if not produtos_cache:
@@ -2809,13 +2820,16 @@ class App:
             chave = (p["nome"], p["valor_venda"])
             if chave in vistos:
                 continue
-            if termo in p["nome"].lower():
+            # Sem termo → lista tudo; com termo → filtra por nome ou código
+            if (not termo or
+                    termo in p["nome"].lower() or
+                    termo in p.get("codigo_interno", "").lower() or
+                    termo in p.get("codigo_barra", "").lower()):
                 vistos.add(chave)
                 resultados.append((cod, p))
-
+        resultados.sort(key=lambda x: x[1]["nome"])
         if not resultados:
-            messagebox.showinfo("Sem resultados",
-                                f"Nenhum produto encontrado para '{termo}'.")
+            messagebox.showinfo("Sem resultados", "Nenhum produto encontrado.")
             return
 
         win = tk.Toplevel(self.root)
@@ -2955,16 +2969,31 @@ class App:
         nome  = prod.get("nome", "—")
         preco = prod.get("valor_venda", "0")
         try:
-            preco_fmt = f"R${float(str(preco).replace(',', '.')):.2f}".replace(".", ",")
+            preco_num = float(str(preco).replace(",", "."))
+            preco_fmt = f"R${preco_num:.2f}".replace(".", ",")
         except Exception:
+            preco_num = 0.0
             preco_fmt = f"R${preco}"
+
+        # Alerta de preço suspeito (R$0,00)
+        if preco_num == 0.0:
+            if not messagebox.askyesno(
+                "⚠️  Preço zerado",
+                f"O produto '{nome[:40]}' está com preço R$0,00.\n\n"
+                "Deseja adicionar mesmo assim?",
+                icon="warning"
+            ):
+                self.lbl_status.config(text="Não adicionado — preço zerado.", style="StatusErr.TLabel")
+                self.entry_cod.delete(0, "end")
+                self.spin_qtd.set(1)
+                self.root.after(80, self.entry_cod.focus_set)
+                return
 
         self.produtos.append({"codigo": codigo, "nome": nome, "preco": preco_fmt, "qtd": qtd})
         self._refresh_tree()
         self.lbl_status.config(text=f"'{nome[:30]}' adicionado ✓", style="StatusOk.TLabel")
         self.entry_cod.delete(0, "end")
         self.spin_qtd.set(1)
-        # delay de 80ms para scanner USB: o leitor pode ainda estar processando Enter
         self.root.after(80, self.entry_cod.focus_set)
 
     def _refresh_tree(self):
@@ -3094,6 +3123,7 @@ class App:
                     erros.append(f"{p['codigo']}: {ex}")
 
         if erros:
+            for e in erros: registrar_erro("Impressão", e)
             messagebox.showerror("Erros ao imprimir", "\n".join(erros))
         else:
             registrar_historico(self.produtos, empresa)

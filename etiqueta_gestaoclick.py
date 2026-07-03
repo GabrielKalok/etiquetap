@@ -1305,9 +1305,9 @@ class App:
     def _build_aba_personalizacao(self, frm):
         # ── Barra de Layouts Salvos (topo fixo, fora do scroll) ──
         self._layouts_salvos = carregar_layouts_salvos()
-        barra_lay = tk.Frame(frm, bg=COR["card"], pady=6)
+        barra_lay = tk.Frame(frm, bg=COR["surface2"], pady=6)
         barra_lay.pack(fill="x", padx=0, pady=(0,2))
-        tk.Label(barra_lay, text="💾 Layout salvo:", bg=COR["card"],
+        tk.Label(barra_lay, text="💾 Layout salvo:", bg=COR["surface2"],
                  fg=COR["text"], font=("Segoe UI Semibold", 9)).pack(side="left", padx=(12,6))
         self._var_layout_sel = tk.StringVar()
         self._combo_layouts = ttk.Combobox(barra_lay, textvariable=self._var_layout_sel,

@@ -1014,9 +1014,8 @@ class App:
         self.build_ui()
 
         if self.cfg.get("sync_auto", True):
-            at = self.cfg.get("access_token", "").strip()
-            st = self.cfg.get("secret_token", "").strip()
-            if at and st:
+            modo = self.cfg.get("modo_fonte", "gestaoclick")
+            if modo == "linkpro" or self.cfg.get("access_token", "").strip():
                 self.root.after(800, self._sync_silencioso)
         self._agendar_sync_periodico()
         # Verificar atualização em background (5s de delay)
@@ -2629,20 +2628,30 @@ class App:
         self._iniciar_sync_silencioso(periodico=False)
 
     def _iniciar_sync_silencioso(self, periodico=False):
-        at       = self.cfg.get("access_token", "").strip()
-        st       = self.cfg.get("secret_token", "").strip()
-        base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
-        if not at or not st:
-            return
+        modo = self.cfg.get("modo_fonte", "gestaoclick")
         self.sync_queue  = queue.Queue()
         self.sync_cancel = threading.Event()
-        self.lbl_cache.config(text="🔄  Sincronizando...")
-        thread = threading.Thread(
-            target=sincronizar_produtos,
-            args=(base_url, at, st, self.sync_queue, self.sync_cancel),
-            daemon=True,
-        )
-        thread.start()
+
+        if modo == "linkpro":
+            self.lbl_cache.config(text="🔄  Sincronizando (LinkPro)...")
+            threading.Thread(
+                target=sincronizar_produtos_pg,
+                args=(self.cfg, self.sync_queue, self.sync_cancel),
+                daemon=True,
+            ).start()
+        else:
+            at       = self.cfg.get("access_token", "").strip()
+            st       = self.cfg.get("secret_token", "").strip()
+            base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
+            if not at or not st:
+                return
+            self.lbl_cache.config(text="🔄  Sincronizando...")
+            threading.Thread(
+                target=sincronizar_produtos,
+                args=(base_url, at, st, self.sync_queue, self.sync_cancel),
+                daemon=True,
+            ).start()
+
         self._poll_sync_silencioso(periodico=periodico)
 
     def _poll_sync_silencioso(self, periodico=False):
@@ -2671,10 +2680,14 @@ class App:
         self._job_periodico = self.root.after(10 * 60 * 1000, self._executar_sync_periodico)
 
     def _executar_sync_periodico(self):
-        at = self.cfg.get("access_token", "").strip()
-        st = self.cfg.get("secret_token", "").strip()
-        if at and st:
+        modo = self.cfg.get("modo_fonte", "gestaoclick")
+        if modo == "linkpro":
             self._iniciar_sync_silencioso(periodico=True)
+        else:
+            at = self.cfg.get("access_token", "").strip()
+            st = self.cfg.get("secret_token", "").strip()
+            if at and st:
+                self._iniciar_sync_silencioso(periodico=True)
         self._agendar_sync_periodico()
 
     def _poll_sync(self, lbl_prog, bar, win):

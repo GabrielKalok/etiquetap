@@ -1,5 +1,5 @@
 {
-  "versao": "1.0.0",
+  "versao": "1.1.0",
   "notas": "Versão inicial — layout multi-coluna, barcode Code 128, layouts salvos, atualização automática.",
   "url_download": "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 }

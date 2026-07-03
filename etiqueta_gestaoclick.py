@@ -1288,7 +1288,7 @@ class App:
         "preco":      {"label": "R$ Preço",     "cor": "#E4483F", "cor_txt": "white"},
         "codigo":     {"label": "Código",       "cor": "#B98900", "cor_txt": "white"},
         "texto_fixo": {"label": "Texto fixo",   "cor": "#9C27B0", "cor_txt": "white"},
-        "barcode":    {"label": "▐▌ Barcode",    "cor": "#212121", "cor_txt": "white"},
+        "barcode":    {"label": "Cód. de barras",    "cor": "#212121", "cor_txt": "white"},
     }
 
     # Nome amigável e step de tamanho para cada elemento

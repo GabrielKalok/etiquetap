@@ -2214,7 +2214,62 @@ class App:
                    command=self.salvar_cfg).grid(row=row_dpi + 3, column=1,
                                                   sticky="w", pady=(22, 0))
 
+        # ── Versão e atualização ──
+        import tkinter as _tk2
+        frm_ver = tk.Frame(cfg_wrap, bg=COR["surface"])
+        frm_ver.grid(row=row_dpi + 4, column=0, columnspan=3, sticky="w", pady=(20, 0))
+
+        tk.Label(frm_ver, text=f"EtiqueTAP  v{VERSION_ATUAL}",
+                 bg=COR["surface"], fg=COR["muted"],
+                 font=("Segoe UI Semibold", 9)).pack(side="left", padx=(0, 16))
+
+        self._lbl_update_status = tk.Label(frm_ver, text="",
+                 bg=COR["surface"], fg=COR["muted"], font=("Segoe UI", 8))
+        self._lbl_update_status.pack(side="left")
+
+
     # ══════════════════════════ Helpers ══════════════════════════
+
+    def _verificar_update_manual(self):
+        """Verificação manual com feedback visível."""
+        if not hasattr(self, "_lbl_update_status"):
+            return
+        self._lbl_update_status.config(text="🔄 Verificando...", fg=COR["muted"])
+        self.root.update()
+
+        def _callback(info):
+            def _ui():
+                versao = info.get("versao","?")
+                self._lbl_update_status.config(
+                    text=f"🆕 Nova versão disponível: {versao}!", fg=COR["success"])
+                self._mostrar_janela_update(
+                    versao, info.get("notas",""),
+                    info.get("url_download", DOWNLOAD_URL))
+            self.root.after(0, _ui)
+
+        def _check_com_feedback():
+            try:
+                req = urllib.request.Request(VERSION_URL)
+                req.add_header("Cache-Control", "no-cache")
+                req.add_header("Pragma", "no-cache")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                versao_remota = data.get("versao","0.0.0")
+                if _versao_maior(versao_remota, VERSION_ATUAL):
+                    _callback(data)
+                else:
+                    def _sem_update():
+                        self._lbl_update_status.config(
+                            text=f"✅ Você já tem a versão mais recente ({VERSION_ATUAL})",
+                            fg=COR["success"])
+                    self.root.after(0, _sem_update)
+            except Exception as e:
+                def _erro(err=str(e)):
+                    self._lbl_update_status.config(
+                        text=f"⚠️ Erro ao verificar: {err[:60]}", fg=COR["warn"])
+                self.root.after(0, _erro)
+
+        threading.Thread(target=_check_com_feedback, daemon=True).start()
 
     def _atualizar_impressoras(self):
         lista = listar_impressoras()

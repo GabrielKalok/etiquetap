@@ -795,9 +795,28 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-VERSION_ATUAL = "1.0.0"
+_VERSION_BASE = "1.0.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
+_VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
+
+def _ler_versao_local():
+    try:
+        if os.path.exists(_VERSION_FILE):
+            with open(_VERSION_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("versao", _VERSION_BASE)
+    except Exception:
+        pass
+    return _VERSION_BASE
+
+def _salvar_versao_local(versao):
+    try:
+        with open(_VERSION_FILE, "w", encoding="utf-8") as f:
+            json.dump({"versao": versao}, f)
+    except Exception:
+        pass
+
+VERSION_ATUAL = _ler_versao_local()
 
 def verificar_atualizacao(callback):
     """Checa o version.json no GitHub em thread separada. Chama callback(info) se houver update."""
@@ -850,6 +869,15 @@ def baixar_atualizacao(url_py, callback_progresso, callback_fim):
                 shutil.copy2(destino, bkp)
             with open(destino, "wb") as f:
                 f.write(conteudo)
+            # Extrair versão do arquivo baixado e salvar localmente
+            try:
+                for line in conteudo.decode("utf-8", errors="ignore").splitlines():
+                    if '_VERSION_BASE' in line and '=' in line:
+                        v = line.split('=')[1].strip().strip('"').strip("'")
+                        _salvar_versao_local(v)
+                        break
+            except Exception:
+                pass
             callback_fim(True, None)
         except Exception as e:
             callback_fim(False, str(e))
@@ -2313,6 +2341,7 @@ class App:
                  ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         pg_campos = [
+            ("Nome da empresa:",       "empresa",     ""),
             ("Host / IP do servidor:", "pg_host",     "localhost"),
             ("Porta:",                 "pg_port",     "5432"),
             ("Usuário:",               "pg_user",     "parceiro"),
@@ -2385,7 +2414,7 @@ class App:
         # ── Versão ──
         frm_ver = tk.Frame(cfg_wrap, bg=COR["surface"])
         frm_ver.grid(row=row_dpi + 4, column=0, columnspan=2, sticky="w", pady=(20, 0))
-        tk.Label(frm_ver, text=f"EtiqueTAP  v{VERSION_ATUAL}",
+        tk.Label(frm_ver, text=f"EtiqueTAP  v{_ler_versao_local()}",
                  bg=COR["surface"], fg=COR["muted"],
                  font=("Segoe UI Semibold", 9)).pack(side="left")
         self._lbl_update_status = tk.Label(frm_ver, text="",

@@ -9,6 +9,8 @@ from tkinter import ttk, messagebox
 import urllib.request
 import urllib.error
 import unicodedata
+import hashlib
+import base64
 
 def remover_acentos(texto):
     nfkd = unicodedata.normalize('NFKD', str(texto))
@@ -153,16 +155,81 @@ DEFAULT_CFG = {
 
 # ───────────────────────── Config ─────────────────────────
 
+import hashlib
+import base64
+
+# Campos sensíveis que serão criptografados no config.json
+_CAMPOS_SENSIVEIS = {
+    "access_token", "secret_token", "api_base_url",
+    "pg_password", "pg_user", "pg_host", "pg_database",
+    "config_password",
+}
+
+def _chave_maquina():
+    """Gera chave AES-128 baseada em características únicas da máquina."""
+    try:
+        import uuid
+        mac = str(uuid.getnode())
+    except Exception:
+        mac = "etiquetap_default"
+    seed = f"EtiqueTAP-{mac}-v1".encode("utf-8")
+    return hashlib.sha256(seed).digest()[:16]   # 128 bits
+
+def _criptografar(texto: str) -> str:
+    """Criptografa texto com AES-ECB simples (suficiente para config local)."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+        chave = _chave_maquina()
+        # Padding para múltiplo de 16
+        dados = texto.encode("utf-8")
+        pad = 16 - (len(dados) % 16)
+        dados += bytes([pad] * pad)
+        cipher = Cipher(algorithms.AES(chave), modes.ECB(), backend=default_backend())
+        enc = cipher.encryptor().update(dados)
+        return "ENC:" + base64.b64encode(enc).decode("ascii")
+    except Exception:
+        return texto   # fallback: sem criptografia se lib não disponível
+
+def _descriptografar(texto: str) -> str:
+    """Descriptografa valor criptografado pelo EtiqueTAP."""
+    if not texto.startswith("ENC:"):
+        return texto   # não criptografado
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+        chave = _chave_maquina()
+        dados = base64.b64decode(texto[4:])
+        cipher = Cipher(algorithms.AES(chave), modes.ECB(), backend=default_backend())
+        dec = cipher.decryptor().update(dados)
+        pad = dec[-1]
+        return dec[:-pad].decode("utf-8")
+    except Exception:
+        return texto   # fallback
+
 def salvar_config(cfg):
+    cfg_enc = {}
+    for k, v in cfg.items():
+        if k in _CAMPOS_SENSIVEIS and isinstance(v, str) and v:
+            cfg_enc[k] = _criptografar(v)
+        else:
+            cfg_enc[k] = v
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        json.dump(cfg_enc, f, indent=2, ensure_ascii=False)
 
 def carregar_config():
     cfg = dict(DEFAULT_CFG)
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            raw = json.load(f)
+        for k, v in raw.items():
+            if k in _CAMPOS_SENSIVEIS and isinstance(v, str):
+                cfg[k] = _descriptografar(v)
+            else:
+                cfg[k] = v
     return cfg
+
+
 
 
 # ───────────────────────── Cache ─────────────────────────
@@ -783,7 +850,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "1.5.0"
+_VERSION_BASE = "1.6.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")

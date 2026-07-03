@@ -16,7 +16,8 @@ def remover_acentos(texto):
 
 BASE_DIR    = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-CACHE_FILE  = os.path.join(BASE_DIR, "produtos_cache.json")
+CACHE_FILE    = os.path.join(BASE_DIR, "produtos_cache.json")
+CACHE_FILE_PG = os.path.join(BASE_DIR, "produtos_cache_linkpro.json")
 HIST_FILE     = os.path.join(BASE_DIR, "historico.json")
 LAYOUTS_FILE  = os.path.join(BASE_DIR, "layouts_salvos.json")
 
@@ -128,6 +129,7 @@ DEFAULT_CFG = {
     "api_base_url": "https://api.gestaoclick.com/api",
     "sync_auto": True,
     "modo_fonte": "gestaoclick",
+    "config_password": "t4p68X",
     "pg_host": "localhost",
     "pg_port": "5432",
     "pg_user": "parceiro",
@@ -164,18 +166,20 @@ def carregar_config():
 
 # ───────────────────────── Cache ─────────────────────────
 
-def salvar_cache(produtos_por_codigo, meta):
+def salvar_cache(produtos_por_codigo, meta, arquivo=None):
+    arquivo = arquivo or CACHE_FILE
     payload = {
         "atualizado_em": meta.get("atualizado_em", ""),
         "total_registros": meta.get("total_registros", 0),
         "produtos": produtos_por_codigo,
     }
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+    with open(arquivo, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
 
-def carregar_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+def carregar_cache(arquivo=None):
+    arquivo = arquivo or CACHE_FILE
+    if os.path.exists(arquivo):
+        with open(arquivo, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"atualizado_em": "", "total_registros": 0, "produtos": {}}
 
@@ -795,7 +799,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "1.3.0"
+_VERSION_BASE = "1.4.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -956,7 +960,7 @@ def sincronizar_produtos_pg(cfg, progress_q, cancel_event):
                 progress_q.put(("progresso", (1, 1, len(dic))))
         conn.close()
         meta = {"atualizado_em": time.strftime("%d/%m/%Y %H:%M:%S"), "total_registros": len(dic)}
-        salvar_cache(dic, meta)
+        salvar_cache(dic, meta, arquivo=CACHE_FILE_PG)
         progress_q.put(("concluido", (len(dic), meta["atualizado_em"])))
     except Exception as e:
         progress_q.put(("erro", str(e)))
@@ -968,7 +972,8 @@ class App:
         self.root.title("EtiqueTAP — Etiquetas GestãoClick · Elgin L42-PRO")
         self.root.resizable(True, True)
         self.cfg = carregar_config()
-        self.cache = carregar_cache()
+        _arq_cache = CACHE_FILE_PG if self.cfg.get("modo_fonte","gestaoclick")=="linkpro" else CACHE_FILE
+        self.cache = carregar_cache(_arq_cache)
         self.produtos = []
 
         self.sync_queue = None
@@ -1102,6 +1107,49 @@ class App:
 
         baixar_atualizacao(url_py, progresso, fim)
 
+    def _abrir_config_protegida(self):
+        """Abre a aba Configurações — pede senha se estiver definida."""
+        senha = self.cfg.get("config_password", "").strip()
+        if not senha:
+            self._selecionar_aba("config")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Configurações — Acesso protegido")
+        win.resizable(False, False)
+        win.grab_set()
+        win.configure(bg=COR["surface"])
+
+        tk.Label(win, text="🔒  Digite a senha para acessar as Configurações",
+                 bg=COR["surface"], fg=COR["text"],
+                 font=("Segoe UI Semibold", 10)).pack(padx=24, pady=(20, 8))
+
+        var_senha = tk.StringVar()
+        entry = ttk.Entry(win, textvariable=var_senha, show="●", width=24,
+                          font=("Segoe UI", 11))
+        entry.pack(padx=24, pady=(0, 6))
+        entry.focus()
+
+        lbl_err = tk.Label(win, text="", bg=COR["surface"], fg=COR["danger"],
+                           font=("Segoe UI", 9))
+        lbl_err.pack()
+
+        def confirmar():
+            if var_senha.get() == senha:
+                win.destroy()
+                self._selecionar_aba("config")
+            else:
+                lbl_err.config(text="Senha incorreta.")
+                var_senha.set("")
+                entry.focus()
+
+        frm_btn = tk.Frame(win, bg=COR["surface"])
+        frm_btn.pack(pady=(8, 20))
+        ttk.Button(frm_btn, text="Entrar", style="Primary.TButton",
+                   command=confirmar).pack(side="left", padx=6, ipadx=10)
+        ttk.Button(frm_btn, text="Cancelar",
+                   command=win.destroy).pack(side="left", padx=6)
+        entry.bind("<Return>", lambda e: confirmar())
+
     def _on_global_return(self, event=None):
         """Se o scanner disparar Enter enquanto entry_cod tem conteúdo, processa o produto."""
         focused = self.root.focus_get()
@@ -1133,7 +1181,7 @@ class App:
         tab_pers      = TabPill(tabbar, "🖼   Personalização", lambda: self._selecionar_aba("personalizacao"),
                                  page_bg=COR["bg"], width=210, height=42)
         tab_pers.pack(side="left", padx=(0, 8))
-        tab_config    = TabPill(tabbar, "⚙   Configurações",  lambda: self._selecionar_aba("config"),
+        tab_config    = TabPill(tabbar, "⚙   Configurações",  lambda: self._abrir_config_protegida(),
                                  page_bg=COR["bg"], width=190, height=42)
         tab_config.pack(side="left")
 
@@ -2410,6 +2458,21 @@ class App:
                    command=self.salvar_cfg).grid(row=row_dpi + 3, column=1,
                                                   sticky="w", pady=(22, 0))
 
+        # Campo de senha de acesso
+        ttk.Separator(cfg_wrap, orient="horizontal").grid(
+            row=row_dpi+4, column=0, columnspan=2, sticky="ew", pady=(18, 12))
+        ttk.Label(cfg_wrap, text="🔒  PROTEÇÃO DE ACESSO",
+                  style="SectionTitle.TLabel").grid(row=row_dpi+5, column=0,
+                                                     columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(cfg_wrap, text="Senha das configurações:", style="Muted.TLabel").grid(
+            row=row_dpi+6, column=0, sticky="w", padx=(0, 14), pady=4)
+        self._var_config_pwd = tk.StringVar(value=self.cfg.get("config_password", "t4p68X"))
+        ttk.Entry(cfg_wrap, textvariable=self._var_config_pwd, show="●", width=24).grid(
+            row=row_dpi+6, column=1, sticky="w", pady=4)
+        ttk.Label(cfg_wrap,
+                  text="Deixe em branco para sem senha. Salve para aplicar.",
+                  style="Muted.TLabel").grid(row=row_dpi+7, column=1, sticky="w")
+
         # ── Versão ──
         frm_ver = tk.Frame(cfg_wrap, bg=COR["surface"])
         frm_ver.grid(row=row_dpi + 4, column=0, columnspan=2, sticky="w", pady=(20, 0))
@@ -2542,6 +2605,8 @@ class App:
         if hasattr(self, "_pg_vars"):
             for key, var in self._pg_vars.items():
                 self.cfg[key] = var.get().strip()
+        if hasattr(self, "_var_config_pwd"):
+            self.cfg["config_password"] = self._var_config_pwd.get().strip()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")
 
@@ -2659,7 +2724,8 @@ class App:
             while True:
                 tipo, dado = self.sync_queue.get_nowait()
                 if tipo == "concluido":
-                    self.cache = carregar_cache()
+                    arq = CACHE_FILE_PG if self.cfg.get("modo_fonte","gestaoclick")=="linkpro" else CACHE_FILE
+                    self.cache = carregar_cache(arq)
                     self._atualizar_label_cache()
                     return
                 elif tipo == "erro":
@@ -2701,7 +2767,8 @@ class App:
                     lbl_prog.config(text=f"Página {pagina} / {total_paginas}  —  {count} produtos")
                 elif tipo == "concluido":
                     count, quando = dado
-                    self.cache = carregar_cache()
+                    arq = CACHE_FILE_PG if self.cfg.get("modo_fonte","gestaoclick")=="linkpro" else CACHE_FILE
+                    self.cache = carregar_cache(arq)
                     self._atualizar_label_cache()
                     win.destroy()
                     messagebox.showinfo("Sincronizado",

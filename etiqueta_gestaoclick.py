@@ -127,6 +127,12 @@ DEFAULT_CFG = {
     "impressora": "",
     "api_base_url": "https://api.gestaoclick.com/api",
     "sync_auto": True,
+    "modo_fonte": "gestaoclick",
+    "pg_host": "localhost",
+    "pg_port": "5432",
+    "pg_user": "parceiro",
+    "pg_password": "qwe123",
+    "pg_database": "InkDB",
     "dpi": DPI_PADRAO,
     # layout salvo no formato mm
     "layout_preset": "1 Coluna",
@@ -851,6 +857,83 @@ def baixar_atualizacao(url_py, callback_progresso, callback_fim):
     threading.Thread(target=_download, daemon=True).start()
 
 
+def buscar_produto_pg(codigo, cfg):
+    """Busca produto diretamente no PostgreSQL do LinkPro pelo código."""
+    try:
+        import psycopg2
+    except ImportError:
+        raise Exception("psycopg2 não instalado. Rode o INSTALAR_E_RODAR.bat.")
+    conn = psycopg2.connect(
+        host=cfg.get("pg_host", "localhost"),
+        port=int(cfg.get("pg_port", 5432)),
+        user=cfg.get("pg_user", "parceiro"),
+        password=cfg.get("pg_password", ""),
+        database=cfg.get("pg_database", "InkDB"),
+        connect_timeout=5,
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT produto_codigo, descricao, preco_venda
+               FROM produto
+               WHERE inativo = false
+               AND (produto_codigo = %s OR descricao ILIKE %s)
+               LIMIT 1""",
+            (codigo, f"%{codigo}%")
+        )
+        row = cur.fetchone()
+        if row:
+            return {"codigo_interno": row[0], "nome": row[1], "valor_venda": str(row[2])}
+        return None
+    finally:
+        conn.close()
+
+def sincronizar_produtos_pg(cfg, progress_q, cancel_event):
+    """Carrega todos os produtos do PostgreSQL do LinkPro."""
+    try:
+        import psycopg2
+    except ImportError:
+        progress_q.put(("erro", "psycopg2 não instalado. Rode o INSTALAR_E_RODAR.bat.")); return
+    try:
+        conn = psycopg2.connect(
+            host=cfg.get("pg_host", "localhost"),
+            port=int(cfg.get("pg_port", 5432)),
+            user=cfg.get("pg_user", "parceiro"),
+            password=cfg.get("pg_password", ""),
+            database=cfg.get("pg_database", "InkDB"),
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM produto WHERE inativo = false")
+        total = cur.fetchone()[0]
+        progress_q.put(("progresso", (1, 1, 0)))
+
+        cur.execute(
+            """SELECT produto_codigo, descricao, preco_venda
+               FROM produto
+               WHERE inativo = false
+               ORDER BY descricao"""
+        )
+        dic = {}
+        for i, row in enumerate(cur.fetchall()):
+            if cancel_event.is_set():
+                progress_q.put(("cancelado", None)); return
+            cod  = str(row[0]).strip()
+            nome = str(row[1]).strip()
+            val  = str(row[2]) if row[2] is not None else "0"
+            if cod:
+                dic[cod] = {"id": cod, "nome": nome, "codigo_interno": cod,
+                            "codigo_barra": "", "valor_venda": val}
+            if i % 200 == 0:
+                progress_q.put(("progresso", (1, 1, len(dic))))
+        conn.close()
+        meta = {"atualizado_em": time.strftime("%d/%m/%Y %H:%M:%S"), "total_registros": len(dic)}
+        salvar_cache(dic, meta)
+        progress_q.put(("concluido", (len(dic), meta["atualizado_em"])))
+    except Exception as e:
+        progress_q.put(("erro", str(e)))
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -1288,7 +1371,7 @@ class App:
         "preco":      {"label": "R$ Preço",     "cor": "#E4483F", "cor_txt": "white"},
         "codigo":     {"label": "Código",       "cor": "#B98900", "cor_txt": "white"},
         "texto_fixo": {"label": "Texto fixo",   "cor": "#9C27B0", "cor_txt": "white"},
-        "barcode":    {"label": "Cód. de barras",    "cor": "#212121", "cor_txt": "white"},
+        "barcode":    {"label": "▐▌ Barcode",    "cor": "#212121", "cor_txt": "white"},
     }
 
     # Nome amigável e step de tamanho para cada elemento
@@ -2143,13 +2226,60 @@ class App:
     # ── Aba Configurações ─────────────────────────────────────────────────────
 
     def _build_aba_config(self, frm):
-        cfg_wrap = ttk.Frame(frm, style="Surface.TFrame")
+        # ── Scroll container ──
+        outer = tk.Frame(frm, bg=COR["surface"])
+        outer.pack(fill="both", expand=True)
+        vsb = ttk.Scrollbar(outer, orient="vertical")
+        vsb.pack(side="right", fill="y")
+        self._canvas_cfg = tk.Canvas(outer, bg=COR["surface"], highlightthickness=0,
+                                      yscrollcommand=vsb.set)
+        self._canvas_cfg.pack(side="left", fill="both", expand=True)
+        vsb.config(command=self._canvas_cfg.yview)
+
+        cfg_inner = tk.Frame(self._canvas_cfg, bg=COR["surface"])
+        win_id = self._canvas_cfg.create_window((0, 0), window=cfg_inner, anchor="nw")
+
+        def _on_resize(e):
+            self._canvas_cfg.configure(scrollregion=self._canvas_cfg.bbox("all"))
+            self._canvas_cfg.itemconfig(win_id, width=self._canvas_cfg.winfo_width())
+        cfg_inner.bind("<Configure>", _on_resize)
+
+        def _scroll(e):
+            self._canvas_cfg.yview_scroll(int(-1*(e.delta/120)), "units")
+
+        # Bind mousewheel em todos os widgets dentro do canvas
+        def _bind_scroll(widget):
+            widget.bind("<MouseWheel>", _scroll)
+            for child in widget.winfo_children():
+                _bind_scroll(child)
+        cfg_inner.bind("<MouseWheel>", _scroll)
+        cfg_inner.bind("<Map>", lambda e: self.root.after(200, lambda: _bind_scroll(cfg_inner)))
+
+        cfg_wrap = ttk.Frame(cfg_inner, style="Surface.TFrame")
         cfg_wrap.pack(fill="both", expand=True, padx=24, pady=22)
 
-        ttk.Label(cfg_wrap, text="CREDENCIAIS DA API",
+        # ══ SEÇÃO: FONTE DE DADOS (sempre visível no topo) ══
+        ttk.Label(cfg_wrap, text="FONTE DE DADOS",
+                  style="SectionTitle.TLabel").grid(row=0, column=0, columnspan=2,
+                                                     sticky="w", pady=(0, 8))
+
+        self._var_modo_fonte = tk.StringVar(value=self.cfg.get("modo_fonte", "gestaoclick"))
+        frm_radio = tk.Frame(cfg_wrap, bg=COR["surface"])
+        frm_radio.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ttk.Radiobutton(frm_radio, text="GestãoClick (API)",
+                        variable=self._var_modo_fonte, value="gestaoclick",
+                        command=self._on_modo_fonte_change).pack(side="left", padx=(0, 20))
+        ttk.Radiobutton(frm_radio, text="LinkPro (banco PostgreSQL)",
+                        variable=self._var_modo_fonte, value="linkpro",
+                        command=self._on_modo_fonte_change).pack(side="left")
+
+        # ══ FRAME GestãoClick ══
+        self._frm_gc = ttk.Frame(cfg_wrap, style="Surface.TFrame")
+        self._frm_gc.grid(row=2, column=0, columnspan=2, sticky="ew")
+
+        ttk.Label(self._frm_gc, text="CREDENCIAIS DA API",
                   style="SectionTitle.TLabel").grid(row=0, column=0, columnspan=2,
                                                      sticky="w", pady=(0, 10))
-
         campos = [
             ("Access Token",        "access_token", True),
             ("Secret Access Token", "secret_token", True),
@@ -2158,28 +2288,66 @@ class App:
         ]
         self.cfg_vars = {}
         for i, (label, key, secret) in enumerate(campos, start=1):
-            ttk.Label(cfg_wrap, text=label, style="Muted.TLabel").grid(
+            ttk.Label(self._frm_gc, text=label, style="Muted.TLabel").grid(
                 row=i, column=0, sticky="w", pady=7, padx=(0, 14))
             var = tk.StringVar(value=self.cfg.get(key, ""))
-            ttk.Entry(cfg_wrap, textvariable=var, width=44,
+            ttk.Entry(self._frm_gc, textvariable=var, width=44,
                       show="•" if secret else "").grid(row=i, column=1, sticky="w", pady=7)
             self.cfg_vars[key] = var
 
         dica_row = len(campos) + 1
-        ttk.Label(cfg_wrap,
+        ttk.Label(self._frm_gc,
                   text="Dica: se a URL padrão não funcionar, tente o domínio que aparece\n"
                        "na barra de endereço do seu GestãoClick (ex: https://suaempresa.com.br/api)",
-                  style="Muted.TLabel", justify="left", foreground=COR["muted"]
-                  ).grid(row=dica_row, column=1, sticky="w", pady=(2, 18))
+                  style="Muted.TLabel", justify="left"
+                  ).grid(row=dica_row, column=1, sticky="w", pady=(2, 8))
 
+        # ══ FRAME LinkPro ══
+        self._frm_linkpro = tk.Frame(cfg_wrap, bg=COR["surface2"], pady=10, padx=10)
+        self._frm_linkpro.grid(row=2, column=0, columnspan=2, sticky="ew")
+
+        tk.Label(self._frm_linkpro,
+                 text="💡  Terminais: coloque o IP do servidor no campo Host  (ex: 192.168.1.10)",
+                 bg=COR["surface2"], fg=COR["muted"],
+                 font=("Segoe UI", 8), justify="left"
+                 ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        pg_campos = [
+            ("Host / IP do servidor:", "pg_host",     "localhost"),
+            ("Porta:",                 "pg_port",     "5432"),
+            ("Usuário:",               "pg_user",     "parceiro"),
+            ("Senha:",                 "pg_password", ""),
+            ("Banco de dados:",        "pg_database", "InkDB"),
+        ]
+        self._pg_vars = {}
+        for i, (lbl, key, default) in enumerate(pg_campos):
+            ttk.Label(self._frm_linkpro, text=lbl).grid(
+                row=i+1, column=0, sticky="w", padx=(0, 8), pady=4)
+            var = tk.StringVar(value=self.cfg.get(key, default))
+            show = "*" if key == "pg_password" else ""
+            ttk.Entry(self._frm_linkpro, textvariable=var, width=32, show=show).grid(
+                row=i+1, column=1, sticky="w")
+            self._pg_vars[key] = var
+
+        ttk.Button(self._frm_linkpro, text="🔌 Testar conexão",
+                   command=self._testar_conexao_pg
+                   ).grid(row=len(pg_campos)+1, column=1, sticky="w", pady=(10, 0))
+        self._lbl_pg_status = ttk.Label(self._frm_linkpro, text="", style="Muted.TLabel")
+        self._lbl_pg_status.grid(row=len(pg_campos)+2, column=1, sticky="w")
+
+        # Aplicar visibilidade inicial
+        self._on_modo_fonte_change()
+
+        # ══ SEPARADOR ══
         ttk.Separator(cfg_wrap, orient="horizontal").grid(
-            row=dica_row + 1, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+            row=3, column=0, columnspan=2, sticky="ew", pady=(16, 18))
 
+        # ══ IMPRESSORA ══
         ttk.Label(cfg_wrap, text="IMPRESSORA",
-                  style="SectionTitle.TLabel").grid(row=dica_row + 2, column=0,
-                                                     columnspan=2, sticky="w", pady=(0, 10))
+                  style="SectionTitle.TLabel").grid(row=4, column=0, columnspan=2,
+                                                     sticky="w", pady=(0, 10))
 
-        row_imp = dica_row + 3
+        row_imp = 5
         ttk.Label(cfg_wrap, text="Impressora", style="Muted.TLabel").grid(
             row=row_imp, column=0, sticky="w", padx=(0, 14), pady=7)
         self.var_impressora = tk.StringVar(value=self.cfg.get("impressora", ""))
@@ -2188,8 +2356,8 @@ class App:
         self.combo_imp.grid(row=row_imp, column=1, sticky="w", pady=7)
         self.cfg_vars["impressora"] = self.var_impressora
 
+        row_dpi = 6
         # DPI
-        row_dpi = row_imp + 1
         ttk.Label(cfg_wrap, text="DPI da impressora", style="Muted.TLabel").grid(
             row=row_dpi, column=0, sticky="w", padx=(0, 14), pady=7)
         self.var_dpi = tk.IntVar(value=int(self.cfg.get("dpi", DPI_PADRAO)))
@@ -2214,21 +2382,60 @@ class App:
                    command=self.salvar_cfg).grid(row=row_dpi + 3, column=1,
                                                   sticky="w", pady=(22, 0))
 
-        # ── Versão e atualização ──
-        import tkinter as _tk2
+        # ── Versão ──
         frm_ver = tk.Frame(cfg_wrap, bg=COR["surface"])
-        frm_ver.grid(row=row_dpi + 4, column=0, columnspan=3, sticky="w", pady=(20, 0))
-
+        frm_ver.grid(row=row_dpi + 4, column=0, columnspan=2, sticky="w", pady=(20, 0))
         tk.Label(frm_ver, text=f"EtiqueTAP  v{VERSION_ATUAL}",
                  bg=COR["surface"], fg=COR["muted"],
-                 font=("Segoe UI Semibold", 9)).pack(side="left", padx=(0, 16))
-
+                 font=("Segoe UI Semibold", 9)).pack(side="left")
         self._lbl_update_status = tk.Label(frm_ver, text="",
                  bg=COR["surface"], fg=COR["muted"], font=("Segoe UI", 8))
-        self._lbl_update_status.pack(side="left")
+        self._lbl_update_status.pack(side="left", padx=(12,0))
 
 
     # ══════════════════════════ Helpers ══════════════════════════
+
+    def _on_modo_fonte_change(self):
+        modo = self._var_modo_fonte.get()
+        if hasattr(self, "_frm_gc") and hasattr(self, "_frm_linkpro"):
+            if modo == "gestaoclick":
+                self._frm_linkpro.grid_remove()
+                self._frm_gc.grid(row=2, column=0, columnspan=2, sticky="ew")
+            else:
+                self._frm_gc.grid_remove()
+                self._frm_linkpro.grid(row=2, column=0, columnspan=2, sticky="ew")
+        # Atualizar scroll
+        if hasattr(self, "_canvas_cfg"):
+            self._canvas_cfg.after(100, lambda: self._canvas_cfg.configure(
+                scrollregion=self._canvas_cfg.bbox("all")))
+
+    def _testar_conexao_pg(self):
+        self._lbl_pg_status.config(text="🔄 Testando...", foreground=COR["muted"])
+        self.root.update()
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=self._pg_vars["pg_host"].get(),
+                port=int(self._pg_vars["pg_port"].get()),
+                user=self._pg_vars["pg_user"].get(),
+                password=self._pg_vars["pg_password"].get(),
+                database=self._pg_vars["pg_database"].get(),
+                connect_timeout=5,
+            )
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM produto WHERE inativo = false")
+            total = cur.fetchone()[0]
+            conn.close()
+            self._lbl_pg_status.config(
+                text=f"✅ Conectado! {total} produtos ativos encontrados.",
+                foreground=COR["success"])
+        except ImportError:
+            self._lbl_pg_status.config(
+                text="❌ psycopg2 não instalado. Rode INSTALAR_E_RODAR.bat.",
+                foreground=COR["danger"])
+        except Exception as e:
+            self._lbl_pg_status.config(
+                text=f"❌ Erro: {str(e)[:60]}", foreground=COR["danger"])
 
     def _verificar_update_manual(self):
         """Verificação manual com feedback visível."""
@@ -2301,12 +2508,46 @@ class App:
         if novo_dpi != self._dpi:
             self._dpi = novo_dpi
             self.cfg["dpi"] = novo_dpi
+        # Salvar modo fonte e campos LinkPro
+        if hasattr(self, "_var_modo_fonte"):
+            self.cfg["modo_fonte"] = self._var_modo_fonte.get()
+        if hasattr(self, "_pg_vars"):
+            for key, var in self._pg_vars.items():
+                self.cfg[key] = var.get().strip()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")
 
     # ══════════════════════════ Sincronização ══════════════════════════
 
     def iniciar_sync(self, silencioso=False):
+        # Modo LinkPro: sincroniza via PostgreSQL
+        if self.cfg.get("modo_fonte","gestaoclick") == "linkpro":
+            self.sync_queue  = queue.Queue()
+            self.sync_cancel = threading.Event()
+            if silencioso:
+                self.lbl_cache.config(text="🔄 Sincronizando (LinkPro)...", foreground=COR["primary"])
+                threading.Thread(target=sincronizar_produtos_pg,
+                                 args=(self.cfg, self.sync_queue, self.sync_cancel),
+                                 daemon=True).start()
+                self._poll_sync_silencioso()
+            else:
+                win = tk.Toplevel(self.root); win.title("LinkPro — Sincronizando")
+                win.resizable(False,False); win.grab_set()
+                ttk.Label(win, text="Buscando produtos no banco LinkPro...",
+                          font=("Segoe UI",10)).pack(padx=24, pady=(16,6))
+                lbl_prog = ttk.Label(win, text="Aguarde...", font=("Segoe UI",9))
+                lbl_prog.pack(padx=24, pady=4)
+                bar = ttk.Progressbar(win, mode="indeterminate", length=340)
+                bar.pack(padx=24, pady=8); bar.start()
+                def cancelar(): self.sync_cancel.set(); win.destroy()
+                ttk.Button(win, text="Cancelar", command=cancelar).pack(pady=(0,14))
+                win.protocol("WM_DELETE_WINDOW", cancelar)
+                threading.Thread(target=sincronizar_produtos_pg,
+                                 args=(self.cfg, self.sync_queue, self.sync_cancel),
+                                 daemon=True).start()
+                self._poll_sync(lbl_prog, bar, win)
+            return
+
         at       = self.cfg.get("access_token", "").strip()
         st       = self.cfg.get("secret_token", "").strip()
         base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]

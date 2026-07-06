@@ -850,7 +850,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "2.0.0"
+_VERSION_BASE = "2.0.1"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1172,8 +1172,11 @@ class App:
         baixar_atualizacao(url_py, progresso, fim)
 
     def _abrir_config_protegida(self):
-        """Abre a aba Configurações — pede senha fixa."""
-        senha = "T4p68X"
+        """Abre a aba Configurações — pede senha se estiver definida."""
+        senha = self.cfg.get("config_password", "").strip()
+        if not senha:
+            self._selecionar_aba("config")
+            return
         win = tk.Toplevel(self.root)
         win.title("Configurações — Acesso protegido")
         win.resizable(False, False)
@@ -2273,17 +2276,14 @@ class App:
         c = self.canvas_preview
         c.delete("all")
 
-        num_col = max(1, self._dims_mm.get("num_colunas", 1))
-        larg_mm = self._dims_mm.get("largura_mm", 90.0)   # largura de 1 coluna
+        larg_mm = self._dims_mm.get("largura_mm", 90.0)
         alt_mm  = self._dims_mm.get("altura_mm",  30.0)
-        papel_mm = self._dims_mm.get("papel_largura_mm", larg_mm * num_col)
-        gap_mm   = self._dims_mm.get("gap_col_mm", 0.0)
 
         # Calcular dimensões em pixels mantendo proporção real
-        # A área disponível é ~380px de largura (papel completo)
+        # A área disponível é ~380px de largura
         MAX_W = 380
-        ratio = papel_mm / max(alt_mm, 0.1)
-        pw    = MAX_W                                       # largura total do canvas
+        ratio = larg_mm / max(alt_mm, 0.1)
+        pw    = MAX_W
         ph    = max(50, min(300, int(MAX_W / ratio)))
 
         # Redimensionar canvas e sombra
@@ -2291,13 +2291,8 @@ class App:
         if hasattr(self, "_prev_shadow"):
             self._prev_shadow.config(width=pw, height=ph)
 
-        # Escala por mm (relativa ao papel todo)
-        sx_papel = pw / papel_mm
-        sy       = ph / alt_mm
-
-        # Largura de 1 coluna em pixels
-        col_w_px = larg_mm * sx_papel
-        gap_px   = gap_mm  * sx_papel
+        sx = pw / larg_mm
+        sy = ph / alt_mm
 
         if not produto:
             # Estado vazio: mostra silhueta da etiqueta
@@ -2313,103 +2308,85 @@ class App:
         codigo  = produto.get("codigo", "")
 
         el = self._layout_elementos
+        anchor_map = {"center": "n", "left": "nw", "right": "ne"}
 
-        # Helpers de posição e tamanho relativos a 1 coluna
+        # Helpers de posição e tamanho
         ancoras = {"center": "n", "left": "nw", "right": "ne"}
-        def ey(elem, d): return float(elem.get("y_mm", d)) * sy
-        def ef(elem, d, m=6): return max(m, int(float(elem.get("tamanho_mm", d)) * sy * 0.85))
-        def ea(elem): return ancoras.get(elem.get("alinha","center"), "n")
+        def ex(el, d): return float(el.get("x_mm", d)) * sx
+        def ey(el, d): return float(el.get("y_mm", d)) * sy
+        def ef(el, d, m=6): return max(m, int(float(el.get("tamanho_mm", d)) * sy * 0.85))
+        def ea(el): return ancoras.get(el.get("alinha","center"), "n")
 
-        # Desenha 1 coluna com offset x_off (em pixels)
-        def _desenhar_coluna(x_off):
-            sx = col_w_px / larg_mm   # escala X dentro da coluna
+        # ── Empresa ──
+        emp = el.get("empresa", {})
+        if emp.get("ativo", True):
+            c.create_text(ex(emp,45), ey(emp,1.7), text=empresa,
+                           anchor=ea(emp), font=("Arial", ef(emp,4), "bold"),
+                           fill="#000000", width=int(pw*0.95))
 
-            def ex(elem, d): return x_off + float(elem.get("x_mm", d)) * sx
+        # ── Linha separadora ──
+        lin = el.get("linha", {})
+        if lin.get("ativo", True):
+            y_l = ey(lin, 6.5)
+            esp = max(1, int(float(lin.get("tamanho_mm", 1.2)) * sy * 0.4))
+            c.create_line(4, y_l, pw-4, y_l, fill="#000000", width=esp)
 
-            # ── Borda da coluna (para separar visualmente) ──
-            if num_col > 1:
-                c.create_rectangle(x_off, 0, x_off + col_w_px, ph,
-                                   outline="#D4B800", fill="", width=1)
+        # ── Nome do produto ──
+        nom = el.get("nome", {})
+        if nom.get("ativo", True):
+            c.create_text(ex(nom,45), ey(nom,8.2), text=nome,
+                           anchor=ea(nom), font=("Arial", ef(nom,3.2), "bold"),
+                           fill="#000000", width=int(pw*0.95))
 
-            # ── Empresa ──
-            emp = el.get("empresa", {})
-            if emp.get("ativo", True):
-                c.create_text(ex(emp,larg_mm/2), ey(emp,1.7), text=empresa,
-                               anchor=ea(emp), font=("Arial", ef(emp,4), "bold"),
-                               fill="#000000", width=int(col_w_px*0.95))
+        # ── Preço ──
+        pre = el.get("preco", {})
+        if pre.get("ativo", True):
+            s_p = ef(pre, 14.7, m=10)
+            c.create_text(ex(pre,45), ey(pre,12.5), text=preco,
+                           anchor=ea(pre), font=("Arial", s_p, "bold"),
+                           fill="#000000")
 
-            # ── Linha separadora ──
-            lin = el.get("linha", {})
-            if lin.get("ativo", True):
-                y_l = ey(lin, 6.5)
-                esp = max(1, int(float(lin.get("tamanho_mm", 1.2)) * sy * 0.4))
-                c.create_line(x_off+2, y_l, x_off+col_w_px-2, y_l,
-                               fill="#000000", width=esp)
+        # ── Código interno ──
+        cod_el = el.get("codigo", {})
+        if cod_el.get("ativo", False) and codigo:
+            c.create_text(ex(cod_el,45), ey(cod_el,26.5), text=codigo,
+                           anchor=ea(cod_el), font=("Arial", ef(cod_el,2.5)),
+                           fill="#333333")
 
-            # ── Nome do produto ──
-            nom = el.get("nome", {})
-            if nom.get("ativo", True):
-                c.create_text(ex(nom,larg_mm/2), ey(nom,8.2), text=nome,
-                               anchor=ea(nom), font=("Arial", ef(nom,3.2), "bold"),
-                               fill="#000000", width=int(col_w_px*0.95))
+        # ── Texto fixo ──
+        txf = el.get("texto_fixo", {})
+        if txf.get("ativo", False):
+            tv = remover_acentos(txf.get("texto","")).upper()
+            if tv:
+                c.create_text(ex(txf,45), ey(txf,1), text=tv,
+                               anchor=ea(txf), font=("Arial", ef(txf,2.5)),
+                               fill="#111111", width=int(pw*0.95))
 
-            # ── Preço ──
-            pre = el.get("preco", {})
-            if pre.get("ativo", True):
-                s_p = ef(pre, 14.7, m=10)
-                c.create_text(ex(pre,larg_mm/2), ey(pre,12.5), text=preco,
-                               anchor=ea(pre), font=("Arial", s_p, "bold"),
-                               fill="#000000")
-
-            # ── Código interno ──
-            cod_el = el.get("codigo", {})
-            if cod_el.get("ativo", False) and codigo:
-                c.create_text(ex(cod_el,larg_mm/2), ey(cod_el,26.5), text=codigo,
-                               anchor=ea(cod_el), font=("Arial", ef(cod_el,2.5)),
-                               fill="#333333")
-
-            # ── Texto fixo ──
-            txf = el.get("texto_fixo", {})
-            if txf.get("ativo", False):
-                tv = remover_acentos(txf.get("texto","")).upper()
-                if tv:
-                    c.create_text(ex(txf,larg_mm/2), ey(txf,1), text=tv,
-                                   anchor=ea(txf), font=("Arial", ef(txf,2.5)),
-                                   fill="#111111", width=int(col_w_px*0.95))
-
-            # ── Código de barras (simulado) ──
-            bar_el = el.get("barcode", {})
-            if bar_el.get("ativo", False):
-                import random; random.seed(7)
-                y_b  = ey(bar_el, 22)
-                h_b  = max(8, float(bar_el.get("tamanho_mm", 5.0)) * sy)
-                x1_b = x_off + col_w_px * 0.05
-                x2_b = x_off + col_w_px * 0.95
-                c.create_rectangle(x1_b, y_b, x2_b, y_b+h_b,
-                                    fill="#FFFFFF", outline="#CCAA00")
-                n_bars = 60
-                step   = (x2_b - x1_b) / n_bars
-                for bi in range(n_bars):
-                    if random.random() > 0.4:
-                        bx = x1_b + bi * step
-                        bw = step * (0.5 + random.random() * 0.5)
-                        c.create_rectangle(bx, y_b+1, bx+bw, y_b+h_b-1,
-                                            fill="#000000", outline="")
-                cod_txt = str(codigo or "0000000000000")
-                c.create_text((x1_b+x2_b)/2, y_b+h_b+2,
-                               text=cod_txt, font=("Courier", max(5, int(h_b*0.28))),
-                               fill="#000000", anchor="n")
-
-        # Renderizar todas as colunas
-        for col in range(num_col):
-            x_off = col * (col_w_px + gap_px)
-            _desenhar_coluna(x_off)
-
-        # Linha de separação entre colunas (borda do papel)
-        if num_col > 1:
-            for col in range(1, num_col):
-                x_sep = col * (col_w_px + gap_px)
-                c.create_line(x_sep, 0, x_sep, ph, fill="#D4B800", width=1, dash=(4, 3))
+        # ── Código de barras (simulado) ──
+        bar_el = el.get("barcode", {})
+        if bar_el.get("ativo", False):
+            import random; random.seed(7)
+            y_b  = ey(bar_el, 22)
+            h_b  = max(8, float(bar_el.get("tamanho_mm", 5.0)) * sy)
+            x1_b = pw * 0.05
+            x2_b = pw * 0.95
+            # fundo branco do código de barras
+            c.create_rectangle(x1_b, y_b, x2_b, y_b+h_b,
+                                fill="#FFFFFF", outline="#CCAA00")
+            # barras
+            n_bars = 60
+            step   = (x2_b - x1_b) / n_bars
+            for bi in range(n_bars):
+                if random.random() > 0.4:
+                    bx = x1_b + bi * step
+                    bw = step * (0.5 + random.random() * 0.5)
+                    c.create_rectangle(bx, y_b+1, bx+bw, y_b+h_b-1,
+                                        fill="#000000", outline="")
+            # texto legível abaixo
+            cod_txt = str(codigo or "0000000000000")
+            c.create_text((x1_b+x2_b)/2, y_b+h_b+2,
+                           text=cod_txt, font=("Courier", max(5, int(h_b*0.28))),
+                           fill="#000000", anchor="n")
 
     # ── Aba Configurações ─────────────────────────────────────────────────────
 
@@ -2571,6 +2548,21 @@ class App:
                    command=self.salvar_cfg).grid(row=row_dpi + 3, column=1,
                                                   sticky="w", pady=(22, 0))
 
+        # Campo de senha de acesso
+        ttk.Separator(cfg_wrap, orient="horizontal").grid(
+            row=row_dpi+4, column=0, columnspan=2, sticky="ew", pady=(18, 12))
+        ttk.Label(cfg_wrap, text="🔒  PROTEÇÃO DE ACESSO",
+                  style="SectionTitle.TLabel").grid(row=row_dpi+5, column=0,
+                                                     columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(cfg_wrap, text="Senha das configurações:", style="Muted.TLabel").grid(
+            row=row_dpi+6, column=0, sticky="w", padx=(0, 14), pady=4)
+        self._var_config_pwd = tk.StringVar(value=self.cfg.get("config_password", ""))
+        ttk.Entry(cfg_wrap, textvariable=self._var_config_pwd, show="●", width=24).grid(
+            row=row_dpi+6, column=1, sticky="w", pady=4)
+        ttk.Label(cfg_wrap,
+                  text="Deixe em branco para sem senha. Salve para aplicar.",
+                  style="Muted.TLabel").grid(row=row_dpi+7, column=1, sticky="w")
+
         # ── Versão ──
         frm_ver = tk.Frame(cfg_wrap, bg=COR["surface"])
         frm_ver.grid(row=row_dpi + 4, column=0, columnspan=2, sticky="w", pady=(20, 0))
@@ -2703,6 +2695,8 @@ class App:
         if hasattr(self, "_pg_vars"):
             for key, var in self._pg_vars.items():
                 self.cfg[key] = var.get().strip()
+        if hasattr(self, "_var_config_pwd"):
+            self.cfg["config_password"] = self._var_config_pwd.get().strip()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")
 

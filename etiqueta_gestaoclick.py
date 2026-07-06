@@ -132,12 +132,12 @@ DEFAULT_CFG = {
     "api_base_url": "https://api.gestaoclick.com/api",
     "sync_auto": True,
     "modo_fonte": "gestaoclick",
-    "config_password": "t4p68X",
+    "config_password": "",
     "pg_host": "localhost",
     "pg_port": "5432",
     "pg_user": "",
     "pg_password": "",
-    "pg_database": "InkDB",
+    "pg_database": "",
     "dpi": DPI_PADRAO,
     # layout salvo no formato mm
     "layout_preset": "1 Coluna",
@@ -850,7 +850,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "1.8.0"
+_VERSION_BASE = "1.9.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1333,14 +1333,35 @@ class App:
 
         card_busca.finalize_fixed_size(extra_pad_x=16, extra_pad_y=16)
 
+        # ── Pré-visualização da etiqueta ──
         preview_area = tk.Frame(frm_topo, bg=COR["surface"])
-        preview_area.pack(side="left", fill="both", expand=True, padx=(16, 0))
-        ttk.Label(preview_area, text="PRÉ-VISUALIZAÇÃO DA ETIQUETA", style="Muted.TLabel",
-                  background=COR["surface"]).pack(anchor="center", pady=(0, 8))
-        self.canvas_preview = tk.Canvas(preview_area, width=320, height=107,
-                                         bg="white", highlightthickness=1,
-                                         highlightbackground=COR["border"])
-        self.canvas_preview.pack(anchor="center")
+        preview_area.pack(side="left", fill="both", expand=True, padx=(20, 0))
+
+        tk.Label(preview_area, text="PRÉ-VISUALIZAÇÃO",
+                 bg=COR["surface"], fg=COR["muted"],
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 6))
+
+        # Container da etiqueta com sombra
+        self._prev_container = tk.Frame(preview_area, bg=COR["surface"])
+        self._prev_container.pack(anchor="w")
+
+        # Sombra (frame levemente maior atrás)
+        self._prev_shadow = tk.Frame(self._prev_container, bg="#AAAAAA")
+        self._prev_shadow.place(x=4, y=4)
+
+        # Etiqueta em si (fundo amarelo)
+        self._prev_etiqueta = tk.Frame(self._prev_container, bg="#FFE800",
+                                        relief="flat", bd=0)
+        self._prev_etiqueta.pack()
+
+        self.canvas_preview = tk.Canvas(self._prev_etiqueta, bg="#FFE800",
+                                         highlightthickness=1,
+                                         highlightbackground="#D4B800")
+        self.canvas_preview.pack()
+
+        # Inicializar com tamanho padrão
+        self._prev_largura_atual = 0
+        self._prev_altura_atual  = 0
 
         frm_cache = ttk.Frame(frm, style="Surface.TFrame")
         frm_cache.pack(fill="x", padx=20, pady=(0, 10))
@@ -2258,22 +2279,27 @@ class App:
         larg_mm = self._dims_mm.get("largura_mm", 90.0)
         alt_mm  = self._dims_mm.get("altura_mm",  30.0)
 
-        MAX_PW, MAX_PH = 320, 160
+        # Calcular dimensões em pixels mantendo proporção real
+        # A área disponível é ~380px de largura
+        MAX_W = 380
         ratio = larg_mm / max(alt_mm, 0.1)
-        if ratio >= MAX_PW / MAX_PH:
-            pw = MAX_PW
-            ph = max(30, int(MAX_PW / ratio))
-        else:
-            ph = MAX_PH
-            pw = max(60, int(MAX_PH * ratio))
+        pw    = MAX_W
+        ph    = max(50, min(300, int(MAX_W / ratio)))
+
+        # Redimensionar canvas e sombra
         c.config(width=pw, height=ph)
+        if hasattr(self, "_prev_shadow"):
+            self._prev_shadow.config(width=pw, height=ph)
+
         sx = pw / larg_mm
         sy = ph / alt_mm
 
         if not produto:
-            c.create_text(pw / 2, ph / 2,
-                           text="Adicione um produto\npara ver a etiqueta",
-                           fill=COR["muted"], font=("Segoe UI", 9), justify="center")
+            # Estado vazio: mostra silhueta da etiqueta
+            c.create_text(pw // 2, ph // 2,
+                           text="Adicione um produto\npara visualizar",
+                           fill="#C8A800", font=("Segoe UI", 9),
+                           justify="center", anchor="center")
             return
 
         empresa = remover_acentos(self.cfg.get("empresa", "") or "EMPRESA").upper()[:30]
@@ -2284,84 +2310,83 @@ class App:
         el = self._layout_elementos
         anchor_map = {"center": "n", "left": "nw", "right": "ne"}
 
-        # empresa
+        # Helpers de posição e tamanho
+        ancoras = {"center": "n", "left": "nw", "right": "ne"}
+        def ex(el, d): return float(el.get("x_mm", d)) * sx
+        def ey(el, d): return float(el.get("y_mm", d)) * sy
+        def ef(el, d, m=6): return max(m, int(float(el.get("tamanho_mm", d)) * sy * 0.85))
+        def ea(el): return ancoras.get(el.get("alinha","center"), "n")
+
+        # ── Empresa ──
         emp = el.get("empresa", {})
         if emp.get("ativo", True):
-            x_e = float(emp.get("x_mm", 45.0)) * sx
-            y_e = float(emp.get("y_mm",  1.7)) * sy
-            s_e = max(6, int(float(emp.get("tamanho_mm", 4.0)) * sy))
-            a_e = anchor_map.get(emp.get("alinha", "center"), "n")
-            c.create_text(x_e, y_e, text=empresa, anchor=a_e,
-                           font=("Arial", s_e, "bold"), fill="black")
+            c.create_text(ex(emp,45), ey(emp,1.7), text=empresa,
+                           anchor=ea(emp), font=("Arial", ef(emp,4), "bold"),
+                           fill="#000000", width=int(pw*0.95))
 
-        # linha
+        # ── Linha separadora ──
         lin = el.get("linha", {})
-        if lin.get("ativo", True) and lin.get("visivel", True):
-            y_l = float(lin.get("y_mm", 6.5)) * sy
-            c.create_line(2 * sx, y_l, pw - 2 * sx, y_l, fill="black", width=1)
+        if lin.get("ativo", True):
+            y_l = ey(lin, 6.5)
+            esp = max(1, int(float(lin.get("tamanho_mm", 1.2)) * sy * 0.4))
+            c.create_line(4, y_l, pw-4, y_l, fill="#000000", width=esp)
 
-        # nome
+        # ── Nome do produto ──
         nom = el.get("nome", {})
         if nom.get("ativo", True):
-            x_n = float(nom.get("x_mm", 45.0)) * sx
-            y_n = float(nom.get("y_mm",  8.2)) * sy
-            s_n = max(6, int(float(nom.get("tamanho_mm", 3.2)) * sy))
-            a_n = anchor_map.get(nom.get("alinha", "center"), "n")
-            c.create_text(x_n, y_n, text=nome, anchor=a_n,
-                           font=("Arial", s_n, "bold"), fill="black")
+            c.create_text(ex(nom,45), ey(nom,8.2), text=nome,
+                           anchor=ea(nom), font=("Arial", ef(nom,3.2), "bold"),
+                           fill="#000000", width=int(pw*0.95))
 
-        # preço
+        # ── Preço ──
         pre = el.get("preco", {})
         if pre.get("ativo", True):
-            x_p = float(pre.get("x_mm", 45.0)) * sx
-            y_p = float(pre.get("y_mm", 12.5)) * sy
-            s_p = max(6, int(float(pre.get("tamanho_mm", 14.7)) * sy))
-            a_p = anchor_map.get(pre.get("alinha", "center"), "n")
-            c.create_text(x_p, y_p, text=preco, anchor=a_p,
-                           font=("Arial", s_p, "bold"), fill="black")
+            s_p = ef(pre, 14.7, m=10)
+            c.create_text(ex(pre,45), ey(pre,12.5), text=preco,
+                           anchor=ea(pre), font=("Arial", s_p, "bold"),
+                           fill="#000000")
 
-        # código
+        # ── Código interno ──
         cod_el = el.get("codigo", {})
         if cod_el.get("ativo", False) and codigo:
-            x_c = float(cod_el.get("x_mm", 45.0)) * sx
-            y_c = float(cod_el.get("y_mm", 26.5)) * sy
-            s_c = max(6, int(float(cod_el.get("tamanho_mm", 2.5)) * sy))
-            a_c = anchor_map.get(cod_el.get("alinha", "center"), "n")
-            c.create_text(x_c, y_c, text=codigo, anchor=a_c,
-                           font=("Arial", s_c), fill="#555555")
+            c.create_text(ex(cod_el,45), ey(cod_el,26.5), text=codigo,
+                           anchor=ea(cod_el), font=("Arial", ef(cod_el,2.5)),
+                           fill="#333333")
 
-        # texto fixo
+        # ── Texto fixo ──
         txf = el.get("texto_fixo", {})
         if txf.get("ativo", False):
-            txt_val = remover_acentos(txf.get("texto", "")).upper()
-            if txt_val:
-                x_t = float(txf.get("x_mm", 45.0)) * sx
-                y_t = float(txf.get("y_mm",  1.0)) * sy
-                s_t = max(6, int(float(txf.get("tamanho_mm", 2.5)) * sy))
-                a_t = anchor_map.get(txf.get("alinha", "center"), "n")
-                c.create_text(x_t, y_t, text=txt_val, anchor=a_t,
-                               font=("Arial", s_t), fill="#9C27B0")
+            tv = remover_acentos(txf.get("texto","")).upper()
+            if tv:
+                c.create_text(ex(txf,45), ey(txf,1), text=tv,
+                               anchor=ea(txf), font=("Arial", ef(txf,2.5)),
+                               fill="#111111", width=int(pw*0.95))
 
-        # barcode (representação visual)
+        # ── Código de barras (simulado) ──
         bar_el = el.get("barcode", {})
         if bar_el.get("ativo", False):
-            y_b  = float(bar_el.get("y_mm",  22.0)) * sy
-            h_b  = max(4, float(bar_el.get("tamanho_mm", 5.0)) * sy)
-            x1_b = pw_px * 0.05
-            x2_b = pw_px * 0.95
-            c.create_rectangle(x1_b, y_b, x2_b, y_b + h_b, fill="#333333", outline="")
-            # linhas de barcode simuladas
-            import random; random.seed(42)
-            step = (x2_b - x1_b) / 40
-            for bi in range(40):
-                if random.random() > 0.5:
+            import random; random.seed(7)
+            y_b  = ey(bar_el, 22)
+            h_b  = max(8, float(bar_el.get("tamanho_mm", 5.0)) * sy)
+            x1_b = pw * 0.05
+            x2_b = pw * 0.95
+            # fundo branco do código de barras
+            c.create_rectangle(x1_b, y_b, x2_b, y_b+h_b,
+                                fill="#FFFFFF", outline="#CCAA00")
+            # barras
+            n_bars = 60
+            step   = (x2_b - x1_b) / n_bars
+            for bi in range(n_bars):
+                if random.random() > 0.4:
                     bx = x1_b + bi * step
-                    c.create_rectangle(bx, y_b, bx + step * 0.6, y_b + h_b,
-                                        fill="#FFFFFF", outline="")
-            # texto do código abaixo
-            c.create_text((x1_b + x2_b) / 2, y_b + h_b + 2,
-                           text="▐▌▐▌▐▌ CÓDIGO DE BARRAS", font=("Arial", 5),
-                           fill="#333333", anchor="n")
+                    bw = step * (0.5 + random.random() * 0.5)
+                    c.create_rectangle(bx, y_b+1, bx+bw, y_b+h_b-1,
+                                        fill="#000000", outline="")
+            # texto legível abaixo
+            cod_txt = str(codigo or "0000000000000")
+            c.create_text((x1_b+x2_b)/2, y_b+h_b+2,
+                           text=cod_txt, font=("Courier", max(5, int(h_b*0.28))),
+                           fill="#000000", anchor="n")
 
     # ── Aba Configurações ─────────────────────────────────────────────────────
 
@@ -2531,7 +2556,7 @@ class App:
                                                      columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(cfg_wrap, text="Senha das configurações:", style="Muted.TLabel").grid(
             row=row_dpi+6, column=0, sticky="w", padx=(0, 14), pady=4)
-        self._var_config_pwd = tk.StringVar(value=self.cfg.get("config_password", "t4p68X"))
+        self._var_config_pwd = tk.StringVar(value=self.cfg.get("config_password", ""))
         ttk.Entry(cfg_wrap, textvariable=self._var_config_pwd, show="●", width=24).grid(
             row=row_dpi+6, column=1, sticky="w", pady=4)
         ttk.Label(cfg_wrap,

@@ -850,7 +850,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "2.0.2"
+_VERSION_BASE = "1.0.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -2307,7 +2307,15 @@ class App:
                            justify="center", anchor="center")
             return
 
-        empresa = remover_acentos(self.cfg.get("empresa", "") or "EMPRESA").upper()[:30]
+        # Lê empresa do campo visível na tela (tempo real, sem precisar salvar)
+        modo = self.cfg.get("modo_fonte", "gestaoclick")
+        if modo == "linkpro" and hasattr(self, "_pg_vars") and "empresa" in self._pg_vars:
+            _empresa_raw = self._pg_vars["empresa"].get().strip()
+        elif hasattr(self, "cfg_vars") and "empresa" in self.cfg_vars:
+            _empresa_raw = self.cfg_vars["empresa"].get().strip()
+        else:
+            _empresa_raw = self.cfg.get("empresa", "")
+        empresa = remover_acentos(_empresa_raw or "EMPRESA").upper()[:30]
         nome    = remover_acentos(produto["nome"]).upper()[:40]
         preco   = produto["preco"]
         codigo  = produto.get("codigo", "")
@@ -2703,6 +2711,13 @@ class App:
         if hasattr(self, "_pg_vars"):
             for key, var in self._pg_vars.items():
                 self.cfg[key] = var.get().strip()
+        # Garantir que cfg["empresa"] sempre reflete o campo visível,
+        # independente do modo (GestãoClick usa cfg_vars, LinkPro usa _pg_vars)
+        modo = self.cfg.get("modo_fonte", "gestaoclick")
+        if modo == "linkpro" and hasattr(self, "_pg_vars") and "empresa" in self._pg_vars:
+            self.cfg["empresa"] = self._pg_vars["empresa"].get().strip()
+        elif modo == "gestaoclick" and "empresa" in self.cfg_vars:
+            self.cfg["empresa"] = self.cfg_vars["empresa"].get().strip()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")
 

@@ -15,7 +15,6 @@ if errorlevel 1 (
 echo Instalando dependencias...
 pip install pywin32 --quiet
 pip install psycopg2-binary --quiet
-pip install cryptography --quiet
 
 echo Iniciando EtiqueTAP...
 python etiqueta_gestaoclick.py

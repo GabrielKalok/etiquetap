@@ -285,40 +285,32 @@ def salvar_tabelas_preco(tabelas, atualizado_em):
 
 def extrair_tabelas_do_cache(cache, apelidos=None):
     """Extrai tipos de preço únicos dos valores[] de todos os produtos em cache.
-    Varre todos os produtos para garantir que todos os tipo_ids apareçam,
-    mesmo que só existam em alguns produtos.
+    O campo nome vem direto do JSON da API como 'nome_tipo'.
     apelidos: dict opcional {tipo_id_str: nome_customizado} vindo das configurações.
-    Retorna lista de dicts: [{"id": "1", "nome": "Varejo"}, ...]
+    Retorna lista de dicts: [{"id": "639163", "nome": "GELADO"}, ...]
     """
     apelidos = apelidos or {}
-    tipos_vistos = {}  # tipo_id -> melhor_nome_encontrado
+    tipos_vistos = {}  # tipo_id -> nome
 
     for prod in cache.get("produtos", {}).values():
         for v in prod.get("valores", []):
             tid = str(v.get("tipo_id", "")).strip()
             if not tid:
                 continue
-            # Se já temos um nome real para esse tipo, não sobrescreve
+            # Já tem nome real — mantém
             if tid in tipos_vistos and not tipos_vistos[tid].startswith("Tabela "):
                 continue
-            # Tenta extrair o nome do tipo direto da resposta da API
-            tipo_obj = v.get("tipo")
-            nome_api = ""
-            if isinstance(tipo_obj, dict):
-                nome_api = tipo_obj.get("nome") or tipo_obj.get("descricao") or ""
-            if not nome_api:
-                nome_api = v.get("tipo_nome") or v.get("descricao") or ""
-            nome_api = str(nome_api).strip()
-
+            # nome_tipo vem direto da API GestãoClick
+            nome_api = str(v.get("nome_tipo") or "").strip()
             if nome_api:
                 tipos_vistos[tid] = nome_api
             elif tid not in tipos_vistos:
-                tipos_vistos[tid] = apelidos.get(tid) or f"Tabela {tid}"
+                tipos_vistos[tid] = f"Tabela {tid}"
 
-    # Apelidos do config sempre têm prioridade final
-    for tid in tipos_vistos:
-        if tid in apelidos and apelidos[tid].strip():
-            tipos_vistos[tid] = apelidos[tid].strip()
+    # Apelidos do config sobrescrevem (para renomear se necessário)
+    for tid, nome in (apelidos or {}).items():
+        if tid in tipos_vistos and nome.strip():
+            tipos_vistos[tid] = nome.strip()
 
     return [{"id": tid, "nome": tipos_vistos[tid]}
             for tid in sorted(tipos_vistos, key=lambda x: int(x) if x.isdigit() else 0)]
@@ -1019,7 +1011,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "3.0.6"
+_VERSION_BASE = "2.0.3"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -2851,7 +2843,7 @@ class App:
         # ── Campo especial: nome da tabela padrão (valor_venda) ──
         ttk.Label(self._frm_apelidos, text="Tabela padrão:", style="Muted.TLabel").grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3)
-        var_padrao = tk.StringVar(value=apelidos_salvos.get("__padrao__", "Padrão (valor_venda)"))
+        var_padrao = tk.StringVar(value=apelidos_salvos.get("__padrao__", "ATACADO"))
         ttk.Entry(self._frm_apelidos, textvariable=var_padrao, width=22).grid(
             row=row, column=1, sticky="w", pady=3)
         ttk.Label(self._frm_apelidos,
@@ -3060,7 +3052,7 @@ class App:
 
     def _nome_tabela_padrao(self):
         """Retorna o nome configurado para a tabela padrão (valor_venda)."""
-        return self.cfg.get("tabelas_apelidos", {}).get("__padrao__", "Padrão (valor_venda)") or "Padrão (valor_venda)"
+        return self.cfg.get("tabelas_apelidos", {}).get("__padrao__", "ATACADO") or "ATACADO"
 
     def _atualizar_combo_tabelas(self):
         """Preenche o combobox com as tabelas de preço carregadas."""

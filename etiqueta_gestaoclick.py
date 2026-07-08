@@ -18,9 +18,10 @@ def remover_acentos(texto):
 
 BASE_DIR    = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-CACHE_FILE    = os.path.join(BASE_DIR, "produtos_cache.json")
-CACHE_FILE_PG = os.path.join(BASE_DIR, "produtos_cache_linkpro.json")
-HIST_FILE     = os.path.join(BASE_DIR, "historico.json")
+CACHE_FILE         = os.path.join(BASE_DIR, "produtos_cache.json")
+CACHE_FILE_PG      = os.path.join(BASE_DIR, "produtos_cache_linkpro.json")
+CACHE_FILE_TABELAS = os.path.join(BASE_DIR, "tabelas_preco_cache.json")
+HIST_FILE          = os.path.join(BASE_DIR, "historico.json")
 LAYOUTS_FILE  = os.path.join(BASE_DIR, "layouts_salvos.json")
 LOG_FILE      = os.path.join(BASE_DIR, "erros.log")
 
@@ -258,6 +259,8 @@ def indexar_produto(dic, item):
         "codigo_interno": item.get("codigo_interno", ""),
         "codigo_barra": item.get("codigo_barra", ""),
         "valor_venda": item.get("valor_venda", "0"),
+        # Tabelas de preço: lista de {"tipo_id": X, "valor_venda": "N.NN"}
+        "valores": item.get("valores", []),
     }
     cod   = (item.get("codigo_interno") or "").strip()
     barra = (item.get("codigo_barra")   or "").strip()
@@ -265,6 +268,149 @@ def indexar_produto(dic, item):
         dic[cod] = reg
     if barra and barra != cod:
         dic[barra] = reg
+
+# ───────────────────────── Tabelas de Preço ─────────────────────────
+
+def carregar_tabelas_preco():
+    """Carrega lista de tabelas do cache local."""
+    if os.path.exists(CACHE_FILE_TABELAS):
+        with open(CACHE_FILE_TABELAS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"tabelas": [], "atualizado_em": ""}
+
+def salvar_tabelas_preco(tabelas, atualizado_em):
+    payload = {"tabelas": tabelas, "atualizado_em": atualizado_em}
+    with open(CACHE_FILE_TABELAS, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+def extrair_tabelas_do_cache(cache, apelidos=None):
+    """Extrai tipos de preço únicos dos valores[] de todos os produtos em cache.
+    Varre todos os produtos para garantir que todos os tipo_ids apareçam,
+    mesmo que só existam em alguns produtos.
+    apelidos: dict opcional {tipo_id_str: nome_customizado} vindo das configurações.
+    Retorna lista de dicts: [{"id": "1", "nome": "Varejo"}, ...]
+    """
+    apelidos = apelidos or {}
+    tipos_vistos = {}  # tipo_id -> melhor_nome_encontrado
+
+    for prod in cache.get("produtos", {}).values():
+        for v in prod.get("valores", []):
+            tid = str(v.get("tipo_id", "")).strip()
+            if not tid:
+                continue
+            # Se já temos um nome real para esse tipo, não sobrescreve
+            if tid in tipos_vistos and not tipos_vistos[tid].startswith("Tabela "):
+                continue
+            # Tenta extrair o nome do tipo direto da resposta da API
+            tipo_obj = v.get("tipo")
+            nome_api = ""
+            if isinstance(tipo_obj, dict):
+                nome_api = tipo_obj.get("nome") or tipo_obj.get("descricao") or ""
+            if not nome_api:
+                nome_api = v.get("tipo_nome") or v.get("descricao") or ""
+            nome_api = str(nome_api).strip()
+
+            if nome_api:
+                tipos_vistos[tid] = nome_api
+            elif tid not in tipos_vistos:
+                tipos_vistos[tid] = apelidos.get(tid) or f"Tabela {tid}"
+
+    # Apelidos do config sempre têm prioridade final
+    for tid in tipos_vistos:
+        if tid in apelidos and apelidos[tid].strip():
+            tipos_vistos[tid] = apelidos[tid].strip()
+
+    return [{"id": tid, "nome": tipos_vistos[tid]}
+            for tid in sorted(tipos_vistos, key=lambda x: int(x) if x.isdigit() else 0)]
+
+def buscar_nomes_tipos_preco(api_base_url, access_token, secret_token):
+    """Tenta buscar nomes dos tipos de preço para exibir no combobox.
+    Testa vários endpoints possíveis. Retorna dict {tipo_id_str: nome} ou {}.
+    """
+    candidatos = [
+        f"{api_base_url.rstrip('/')}/tipos_preco",
+        f"{api_base_url.rstrip('/')}/tipospreco",
+        f"{api_base_url.rstrip('/')}/tipos-preco",
+        f"{api_base_url.rstrip('/')}/tabelas_preco",
+        f"{api_base_url.rstrip('/')}/tabelasdepreco",
+        f"{api_base_url.rstrip('/')}/tabelas-preco",
+        f"{api_base_url.rstrip('/')}/preco/tipos",
+        f"{api_base_url.rstrip('/')}/precos/tipos",
+    ]
+    for url in candidatos:
+        req = urllib.request.Request(url)
+        req.add_header("access-token", access_token)
+        req.add_header("secret-access-token", secret_token)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            itens = raw.get("data", raw) if isinstance(raw, dict) else raw
+            if isinstance(itens, list) and itens:
+                result = {}
+                for t in itens:
+                    tid  = str(t.get("id", "")).strip()
+                    nome = (t.get("nome") or t.get("descricao") or f"Tabela {tid}").strip()
+                    if tid:
+                        result[tid] = nome
+                registrar_erro("DIAG_TIPOS_API_OK", f"Endpoint: {url} → {result}")
+                return result
+        except urllib.error.HTTPError as e:
+            registrar_erro("DIAG_TIPOS_API", f"HTTP {e.code} em {url}")
+            continue
+        except Exception as e:
+            registrar_erro("DIAG_TIPOS_API", f"Erro em {url}: {e}")
+            continue
+    return {}
+
+def buscar_tabelas_preco_gc(api_base_url, access_token, secret_token, cache=None, apelidos=None):
+    """Monta lista de tabelas de preço a partir do cache de produtos + opcionalmente nomes da API.
+    Retorna lista de dicts: [{"id": ..., "nome": ...}, ...]
+    """
+    if cache is None:
+        cache = carregar_cache(CACHE_FILE)
+    tabelas = extrair_tabelas_do_cache(cache, apelidos=apelidos)
+
+    # Tenta enriquecer com nomes reais da API (não bloqueante se falhar)
+    try:
+        nomes = buscar_nomes_tipos_preco(api_base_url, access_token, secret_token)
+        if nomes:
+            for t in tabelas:
+                # Apelido do usuário tem prioridade sobre nome da API
+                if t["id"] not in (apelidos or {}) and t["id"] in nomes:
+                    t["nome"] = nomes[t["id"]]
+    except Exception:
+        pass
+
+    atualizado_em = time.strftime("%d/%m/%Y %H:%M:%S")
+    salvar_tabelas_preco(tabelas, atualizado_em)
+    return tabelas
+
+def buscar_preco_tabela_gc(api_base_url, access_token, secret_token, tabela_id, produto_id):
+    """Busca o preço de um produto específico em uma tabela de preço.
+    Retorna float ou None se não encontrado.
+    """
+    url = f"{api_base_url.rstrip('/')}/tabelasdepreco/{tabela_id}/produtos/{produto_id}"
+    req = urllib.request.Request(url)
+    req.add_header("access-token", access_token)
+    req.add_header("secret-access-token", secret_token)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # A API pode retornar data como lista ou dict
+        item = data.get("data", data)
+        if isinstance(item, list) and item:
+            item = item[0]
+        if isinstance(item, dict):
+            val = item.get("valor_venda") or item.get("preco") or item.get("valor")
+            if val is not None:
+                return float(str(val).replace(",", "."))
+    except urllib.error.HTTPError:
+        return None
+    except Exception:
+        return None
+    return None
 
 def sincronizar_produtos(api_base_url, access_token, secret_token, progress_q, cancel_event):
     produtos_por_codigo = {}
@@ -297,6 +443,19 @@ def sincronizar_produtos(api_base_url, access_token, secret_token, progress_q, c
             return
 
         itens = data.get("data", [])
+
+        # LOG DIAGNÓSTICO: registra estrutura de valores[] dos primeiros produtos
+        if pagina == 1 and itens:
+            registrar_erro("DIAG_PRODUTO_RAW_P1", json.dumps(itens[0], ensure_ascii=False)[:2000])
+            # Também registra todos os tipo_ids únicos encontrados nesta página
+            tipos_pag = set()
+            for it in itens:
+                for v in it.get("valores", []):
+                    tid = str(v.get("tipo_id", "")).strip()
+                    if tid:
+                        tipos_pag.add(tid)
+            registrar_erro("DIAG_TIPOS_P1", f"tipo_ids na página 1: {sorted(tipos_pag)}")
+
         for item in itens:
             indexar_produto(produtos_por_codigo, item)
 
@@ -850,7 +1009,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "2.0.3"
+_VERSION_BASE = "4.0.0"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1044,6 +1203,15 @@ class App:
         self.sync_cancel = None
         self.sync_win = None
 
+        # Cache de tabelas de preço (GestãoClick)
+        _tab_cache = carregar_tabelas_preco()
+        self._tabelas_preco = _tab_cache.get("tabelas", [])  # [{"id":..,"nome":..}]
+
+        # Controle de acesso à aba Configurações:
+        # True enquanto a sessão estiver aberta após autenticação correta.
+        # Volta a False ao reiniciar o programa.
+        self._config_desbloqueada = False
+
         # DPI configurado
         self._dpi = int(self.cfg.get("dpi", DPI_PADRAO))
 
@@ -1087,6 +1255,14 @@ class App:
             if modo == "linkpro" or self.cfg.get("access_token", "").strip():
                 self.root.after(800, self._sync_silencioso)
         self._agendar_sync_periodico()
+
+        # Carrega tabelas de preço em background ao abrir (GestãoClick)
+        if self.cfg.get("modo_fonte", "gestaoclick") == "gestaoclick":
+            at = self.cfg.get("access_token", "").strip()
+            st = self.cfg.get("secret_token", "").strip()
+            if at and st:
+                self.root.after(1500, self._recarregar_tabelas_bg_silencioso)
+
         # Verificar atualização em background (5s de delay)
         self.root.after(5000, lambda: verificar_atualizacao(self._on_update_disponivel))
 
@@ -1172,7 +1348,14 @@ class App:
         baixar_atualizacao(url_py, progresso, fim)
 
     def _abrir_config_protegida(self):
-        """Abre a aba Configurações — pede senha fixa."""
+        """Abre a aba Configurações — pede senha na primeira vez da sessão."""
+        # Se já autenticou nesta sessão, abre direto sem pedir senha novamente
+        if self._config_desbloqueada:
+            if hasattr(self, "_construir_campos_apelidos"):
+                self._construir_campos_apelidos()
+            self._selecionar_aba("config")
+            return
+
         senha = "T4p68X"
         win = tk.Toplevel(self.root)
         win.title("Configurações — Acesso protegido")
@@ -1196,7 +1379,10 @@ class App:
 
         def confirmar():
             if var_senha.get() == senha:
+                self._config_desbloqueada = True   # libera pelo resto da sessão
                 win.destroy()
+                if hasattr(self, "_construir_campos_apelidos"):
+                    self._construir_campos_apelidos()
                 self._selecionar_aba("config")
             else:
                 lbl_err.config(text="Senha incorreta.")
@@ -1328,6 +1514,38 @@ class App:
                                      background=COR["surface2"])
         self.lbl_status.grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
+        # ── Tabela de preço (somente GestãoClick) ──
+        self._frm_tabela = ttk.Frame(inner_busca, style="Panel.TFrame")
+        self._frm_tabela.grid(row=4, column=0, columnspan=5, sticky="w", pady=(10, 0))
+
+        ttk.Label(self._frm_tabela, text="TABELA DE PREÇO", style="SectionTitle.TLabel",
+                  background=COR["surface2"]).pack(side="left", padx=(0, 8))
+
+        self._var_tabela = tk.StringVar(value="Padrão (valor_venda)")
+        self._combo_tabela = ttk.Combobox(
+            self._frm_tabela,
+            textvariable=self._var_tabela,
+            state="readonly",
+            width=26,
+            font=("Segoe UI", 10),
+        )
+        self._combo_tabela.pack(side="left", padx=(0, 6))
+
+        ttk.Button(self._frm_tabela, text="🔄", style="Secondary.TButton", width=3,
+                   command=self._recarregar_tabelas_manual).pack(side="left", padx=(0, 6))
+
+        self._lbl_tabela_status = tk.Label(
+            self._frm_tabela, text="", bg=COR["surface2"],
+            fg=COR["muted"], font=("Segoe UI", 8)
+        )
+        self._lbl_tabela_status.pack(side="left")
+
+        self._atualizar_combo_tabelas()
+
+        # Ocultar no modo LinkPro
+        if self.cfg.get("modo_fonte", "gestaoclick") == "linkpro":
+            self._frm_tabela.grid_remove()
+
         card_busca.finalize_fixed_size(extra_pad_x=16, extra_pad_y=16)
 
         # ── Pré-visualização da etiqueta ──
@@ -1372,17 +1590,19 @@ class App:
         card_tabela.pack(fill="both", expand=True, padx=20, pady=(0, 4))
         card_tabela_inner = card_tabela.body
 
-        cols = ("codigo", "nome", "preco", "qtd")
+        cols = ("codigo", "nome", "tabela", "preco", "qtd")
         self.tree = ttk.Treeview(card_tabela_inner, columns=cols, show="headings",
                                   height=8, selectmode="browse")
         self.tree.heading("codigo", text="CÓDIGO")
         self.tree.heading("nome",   text="NOME DO PRODUTO")
+        self.tree.heading("tabela", text="TABELA DE PREÇO")
         self.tree.heading("preco",  text="PREÇO")
         self.tree.heading("qtd",    text="QTD")
-        self.tree.column("codigo", width=90,  anchor="center")
-        self.tree.column("nome",   width=300, anchor="w")
-        self.tree.column("preco",  width=100, anchor="center")
-        self.tree.column("qtd",    width=60,  anchor="center")
+        self.tree.column("codigo", width=80,  anchor="center")
+        self.tree.column("nome",   width=260, anchor="w")
+        self.tree.column("tabela", width=130, anchor="center")
+        self.tree.column("preco",  width=90,  anchor="center")
+        self.tree.column("qtd",    width=55,  anchor="center")
         self.tree.tag_configure("odd",  background=COR["surface"])
         self.tree.tag_configure("even", background=COR["surface2"])
 
@@ -2498,6 +2718,23 @@ class App:
                   style="Muted.TLabel", justify="left"
                   ).grid(row=dica_row, column=1, sticky="w", pady=(2, 8))
 
+        # ── Apelidos das tabelas de preço ──
+        ttk.Separator(self._frm_gc, orient="horizontal").grid(
+            row=dica_row + 1, column=0, columnspan=2, sticky="ew", pady=(8, 10))
+        ttk.Label(self._frm_gc, text="NOMES DAS TABELAS DE PREÇO",
+                  style="SectionTitle.TLabel").grid(
+            row=dica_row + 2, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Label(self._frm_gc,
+                  text="Digite o nome para cada ID de tabela (ex: Varejo, Atacado).\n"
+                       "Os IDs aparecem após sincronizar produtos.",
+                  style="Muted.TLabel", justify="left").grid(
+            row=dica_row + 3, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self._frm_apelidos = ttk.Frame(self._frm_gc, style="Surface.TFrame")
+        self._frm_apelidos.grid(row=dica_row + 4, column=0, columnspan=2, sticky="w")
+        self._apelido_vars = {}
+        self._construir_campos_apelidos()
+
         # ══ FRAME LinkPro ══
         self._frm_linkpro = tk.Frame(cfg_wrap, bg=COR["surface2"], pady=10, padx=10)
         self._frm_linkpro.grid(row=2, column=0, columnspan=2, sticky="ew")
@@ -2591,6 +2828,35 @@ class App:
 
 
     # ══════════════════════════ Helpers ══════════════════════════
+
+    def _construir_campos_apelidos(self):
+        """Constrói (ou reconstrói) os campos de apelido de tabelas no frame de config."""
+        for w in self._frm_apelidos.winfo_children():
+            w.destroy()
+        self._apelido_vars = {}
+        apelidos_salvos = self.cfg.get("tabelas_apelidos", {})
+
+        # Pega os tipo_ids conhecidos do cache atual
+        tabelas_conhecidas = [t["id"] for t in self._tabelas_preco]
+
+        # Também inclui ids que já têm apelido salvo mas podem não estar no cache ainda
+        for tid in apelidos_salvos:
+            if tid not in tabelas_conhecidas:
+                tabelas_conhecidas.append(tid)
+
+        if not tabelas_conhecidas:
+            ttk.Label(self._frm_apelidos,
+                      text="Nenhuma tabela encontrada — sincronize os produtos primeiro.",
+                      style="Muted.TLabel").grid(row=0, column=0, columnspan=2)
+            return
+
+        for i, tid in enumerate(tabelas_conhecidas):
+            ttk.Label(self._frm_apelidos, text=f"ID {tid}:", style="Muted.TLabel").grid(
+                row=i, column=0, sticky="w", padx=(0, 8), pady=3)
+            var = tk.StringVar(value=apelidos_salvos.get(tid, ""))
+            ttk.Entry(self._frm_apelidos, textvariable=var, width=22).grid(
+                row=i, column=1, sticky="w", pady=3)
+            self._apelido_vars[tid] = var
 
     def _on_modo_fonte_change(self):
         modo = self._var_modo_fonte.get()
@@ -2688,6 +2954,130 @@ class App:
         total = sum(p["qtd"] for p in self.produtos)
         self.lbl_total.config(text=f"Total: {total} etiqueta(s)")
 
+    def _aplicar_tabelas(self, tabelas, erro=None):
+        """Chamado na thread principal após fetch silencioso das tabelas."""
+        self._tabelas_preco = tabelas
+        self._atualizar_combo_tabelas()
+        if hasattr(self, "_lbl_tabela_status"):
+            if erro:
+                self._lbl_tabela_status.config(text=f"⚠ {erro[:50]}", fg=COR["danger"])
+            elif tabelas:
+                self._lbl_tabela_status.config(
+                    text=f"{len(tabelas)} tabela(s) carregada(s)", fg=COR["muted"])
+            else:
+                self._lbl_tabela_status.config(
+                    text="Nenhuma tabela encontrada", fg=COR["muted"])
+
+    def _recarregar_tabelas_bg_silencioso(self):
+        """Carrega tabelas em background sem feedback visível (chamado na abertura)."""
+        at       = self.cfg.get("access_token", "").strip()
+        st       = self.cfg.get("secret_token", "").strip()
+        base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
+        cache    = self.cache
+        if not at or not st:
+            return
+        def _bg():
+            try:
+                tabs = buscar_tabelas_preco_gc(base_url, at, st, cache=cache, apelidos=self.cfg.get("tabelas_apelidos", {}))
+                self.root.after(0, lambda: self._aplicar_tabelas(tabs))
+            except Exception as e:
+                registrar_erro("Tabelas de Preço (abertura)", str(e))
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _recarregar_tabelas_manual(self):
+        """Botão 🔄: extrai tabelas do cache de produtos + tenta enriquecer nomes via API."""
+        at       = self.cfg.get("access_token", "").strip()
+        st       = self.cfg.get("secret_token", "").strip()
+        base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
+        cache    = self.cache
+        if hasattr(self, "_lbl_tabela_status"):
+            self._lbl_tabela_status.config(text="Buscando...", fg=COR["primary"])
+        def _bg():
+            try:
+                tabs = buscar_tabelas_preco_gc(base_url, at, st, cache=cache, apelidos=self.cfg.get("tabelas_apelidos", {}))
+                self.root.after(0, lambda: self._aplicar_tabelas(tabs))
+            except Exception as e:
+                self.root.after(0, lambda: self._aplicar_tabelas([], erro=str(e)))
+                registrar_erro("Tabelas de Preço (manual)", str(e))
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _mostrar_erro_tabelas(self, msg):
+        """Exibe janela com diagnóstico completo dos endpoints testados."""
+        if hasattr(self, "_lbl_tabela_status"):
+            self._lbl_tabela_status.config(text="⚠ Falhou — veja detalhes", fg=COR["danger"])
+        win = tk.Toplevel(self.root)
+        win.title("Diagnóstico — Tabelas de Preço")
+        win.configure(bg=COR["surface"])
+        win.resizable(True, True)
+        win.geometry("620x380")
+        win.grab_set()
+
+        ttk.Label(win, text="Resultado dos endpoints testados:",
+                  style="SectionTitle.TLabel").pack(anchor="w", padx=18, pady=(14, 6))
+
+        txt = tk.Text(win, font=("Consolas", 9), wrap="word",
+                      bg=COR["surface2"], fg=COR["text"],
+                      relief="flat", padx=10, pady=8)
+        sb = ttk.Scrollbar(win, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        txt.pack(side="left", fill="both", expand=True, padx=(18, 0), pady=(0, 14))
+        sb.pack(side="right", fill="y", padx=(0, 18), pady=(0, 14))
+        txt.insert("end", msg)
+        txt.config(state="disabled")
+
+        ttk.Label(win,
+                  text="Copie o texto acima e verifique o endpoint correto na documentação da sua API.",
+                  style="Muted.TLabel", wraplength=580).pack(padx=18, pady=(0, 10))
+        ttk.Button(win, text="Fechar", command=win.destroy).pack(pady=(0, 14))
+
+    def _atualizar_combo_tabelas(self):
+        """Preenche o combobox com as tabelas de preço carregadas."""
+        opcoes = ["Padrão (valor_venda)"] + [t["nome"] for t in self._tabelas_preco]
+        if hasattr(self, "_combo_tabela"):
+            self._combo_tabela["values"] = opcoes
+            if self._var_tabela.get() not in opcoes:
+                self._var_tabela.set("Padrão (valor_venda)")
+
+    def _tabela_selecionada_id(self):
+        """Retorna o id da tabela selecionada, ou None se for 'Padrão'."""
+        sel = self._var_tabela.get()
+        if sel == "Padrão (valor_venda)" or not sel:
+            return None
+        for t in self._tabelas_preco:
+            if t["nome"] == sel:
+                return t["id"]
+        return None
+
+    def _resolver_preco_tabela(self, prod):
+        """Resolve o preço do produto considerando a tabela selecionada.
+        Usa valores[] do cache — sem chamada de API adicional.
+        Retorna (preco_num: float, preco_fmt: str, origem: str).
+        """
+        val_padrao_str = prod.get("valor_venda", "0")
+        try:
+            val_padrao = float(str(val_padrao_str).replace(",", "."))
+        except Exception:
+            val_padrao = 0.0
+
+        tabela_id = self._tabela_selecionada_id()
+        if tabela_id is None:
+            preco_fmt = f"R${val_padrao:.2f}".replace(".", ",")
+            return val_padrao, preco_fmt, "padrão"
+
+        # Procura o tipo_id correspondente em valores[]
+        for v in prod.get("valores", []):
+            if str(v.get("tipo_id", "")).strip() == tabela_id:
+                try:
+                    val_tab = float(str(v.get("valor_venda", "0")).replace(",", "."))
+                    preco_fmt = f"R${val_tab:.2f}".replace(".", ",")
+                    return val_tab, preco_fmt, self._var_tabela.get()
+                except Exception:
+                    break
+
+        # tipo_id não encontrado neste produto — fallback para valor_venda padrão
+        preco_fmt = f"R${val_padrao:.2f}".replace(".", ",")
+        return val_padrao, preco_fmt, "padrão (fallback)"
+
     def _atualizar_label_cache(self):
         n     = len(self.cache.get("produtos", {}))
         quando = self.cache.get("atualizado_em", "")
@@ -2711,13 +3101,24 @@ class App:
         if hasattr(self, "_pg_vars"):
             for key, var in self._pg_vars.items():
                 self.cfg[key] = var.get().strip()
-        # Garantir que cfg["empresa"] sempre reflete o campo visível,
-        # independente do modo (GestãoClick usa cfg_vars, LinkPro usa _pg_vars)
+        # Garantir que cfg["empresa"] sempre reflete o campo visível
         modo = self.cfg.get("modo_fonte", "gestaoclick")
         if modo == "linkpro" and hasattr(self, "_pg_vars") and "empresa" in self._pg_vars:
             self.cfg["empresa"] = self._pg_vars["empresa"].get().strip()
         elif modo == "gestaoclick" and "empresa" in self.cfg_vars:
             self.cfg["empresa"] = self.cfg_vars["empresa"].get().strip()
+        # Salvar apelidos de tabelas de preço
+        if hasattr(self, "_apelido_vars"):
+            apelidos = {tid: var.get().strip()
+                        for tid, var in self._apelido_vars.items()
+                        if var.get().strip()}
+            self.cfg["tabelas_apelidos"] = apelidos
+            # Reaplicar nomes no dropdown imediatamente
+            apelidos_completos = self.cfg.get("tabelas_apelidos", {})
+            for t in self._tabelas_preco:
+                if t["id"] in apelidos_completos and apelidos_completos[t["id"]]:
+                    t["nome"] = apelidos_completos[t["id"]]
+            self._atualizar_combo_tabelas()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")
 
@@ -2838,6 +3239,18 @@ class App:
                     arq = CACHE_FILE_PG if self.cfg.get("modo_fonte","gestaoclick")=="linkpro" else CACHE_FILE
                     self.cache = carregar_cache(arq)
                     self._atualizar_label_cache()
+                    # Atualiza tabelas de preço em background (só GestãoClick)
+                    if self.cfg.get("modo_fonte", "gestaoclick") == "gestaoclick":
+                        def _carregar_tabelas_bg():
+                            try:
+                                at       = self.cfg.get("access_token", "").strip()
+                                st       = self.cfg.get("secret_token", "").strip()
+                                base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
+                                tabs = buscar_tabelas_preco_gc(base_url, at, st, cache=self.cache, apelidos=self.cfg.get("tabelas_apelidos", {}))
+                                self.root.after(0, lambda: self._aplicar_tabelas(tabs))
+                            except Exception as e:
+                                registrar_erro("Tabelas de Preço (silencioso)", str(e))
+                        threading.Thread(target=_carregar_tabelas_bg, daemon=True).start()
                     return
                 elif tipo == "erro":
                     self._atualizar_label_cache()
@@ -2883,6 +3296,16 @@ class App:
                     self.cache = carregar_cache(arq)
                     self._atualizar_label_cache()
                     win.destroy()
+                    # Busca tabelas de preço (só GestãoClick)
+                    if self.cfg.get("modo_fonte", "gestaoclick") == "gestaoclick":
+                        try:
+                            at       = self.cfg.get("access_token", "").strip()
+                            st       = self.cfg.get("secret_token", "").strip()
+                            base_url = self.cfg.get("api_base_url", "").strip() or DEFAULT_CFG["api_base_url"]
+                            self._tabelas_preco = buscar_tabelas_preco_gc(base_url, at, st, cache=self.cache, apelidos=self.cfg.get("tabelas_apelidos", {}))
+                            self._atualizar_combo_tabelas()
+                        except Exception as e:
+                            registrar_erro("Tabelas de Preço", str(e))
                     messagebox.showinfo("Sincronizado",
                                         f"{count} produtos sincronizados com sucesso!")
                     return
@@ -3008,14 +3431,10 @@ class App:
             except Exception:
                 qtd = 1
             nome  = p.get("nome", "—")
-            preco = p.get("valor_venda", "0")
-            try:
-                preco_fmt = f"R${float(str(preco).replace(',', '.')):.2f}".replace(".", ",")
-            except Exception:
-                preco_fmt = f"R${preco}"
+            _, preco_fmt, _ = self._resolver_preco_tabela(p)
             cod_display = p.get("codigo_interno") or cod_key
             for i, item in enumerate(self.produtos):
-                if item["codigo"] == cod_display:
+                if item["codigo"] == cod_display and item["preco"] == preco_fmt:
                     self.produtos[i]["qtd"] += qtd
                     self._refresh_tree()
                     self.lbl_status.config(
@@ -3024,7 +3443,8 @@ class App:
                     win.destroy()
                     return
             self.produtos.append({"codigo": cod_display, "nome": nome,
-                                   "preco": preco_fmt, "qtd": qtd})
+                                   "preco": preco_fmt, "qtd": qtd,
+                                   "tabela": self._var_tabela.get() if hasattr(self, "_var_tabela") else "Padrão"})
             self._refresh_tree()
             self.lbl_status.config(text=f"'{nome[:30]}' adicionado ✓", style="StatusOk.TLabel")
             self.entry_busca_nome.delete(0, "end")
@@ -3041,7 +3461,7 @@ class App:
     def adicionar_produto(self):
         codigo = self.entry_cod.get().strip()
         if not codigo:
-            messagebox.showwarning("Atenção", "Informe o código do produto.")
+            # Campo vazio: ignora silenciosamente (Enter residual do leitor de código de barras)
             return
         try:
             qtd = int(self.spin_qtd.get())
@@ -3049,17 +3469,6 @@ class App:
                 qtd = 1
         except Exception:
             qtd = 1
-
-        for i, p in enumerate(self.produtos):
-            if p["codigo"] == codigo:
-                self.produtos[i]["qtd"] += qtd
-                self._refresh_tree()
-                self.lbl_status.config(
-                    text=f"Qtd atualizada para {self.produtos[i]['qtd']} ✓",
-                    style="StatusOk.TLabel")
-                self.entry_cod.delete(0, "end")
-                self.spin_qtd.set(1)
-                return
 
         produtos_cache = self.cache.get("produtos", {})
         prod = produtos_cache.get(codigo)
@@ -3080,13 +3489,9 @@ class App:
             return
 
         nome  = prod.get("nome", "—")
-        preco = prod.get("valor_venda", "0")
-        try:
-            preco_num = float(str(preco).replace(",", "."))
-            preco_fmt = f"R${preco_num:.2f}".replace(".", ",")
-        except Exception:
-            preco_num = 0.0
-            preco_fmt = f"R${preco}"
+
+        # Resolve preço considerando tabela de preço selecionada
+        preco_num, preco_fmt, origem_preco = self._resolver_preco_tabela(prod)
 
         # Alerta de preço suspeito (R$0,00)
         if preco_num == 0.0:
@@ -3102,7 +3507,21 @@ class App:
                 self.root.after(80, self.entry_cod.focus_set)
                 return
 
-        self.produtos.append({"codigo": codigo, "nome": nome, "preco": preco_fmt, "qtd": qtd})
+        # Mesma combinação código+preço já na lista → soma qtd; preço diferente → nova linha
+        for i, p in enumerate(self.produtos):
+            if p["codigo"] == codigo and p["preco"] == preco_fmt:
+                self.produtos[i]["qtd"] += qtd
+                self._refresh_tree()
+                self.lbl_status.config(
+                    text=f"Qtd atualizada para {self.produtos[i]['qtd']} ✓",
+                    style="StatusOk.TLabel")
+                self.entry_cod.delete(0, "end")
+                self.spin_qtd.set(1)
+                return
+
+        nome_tabela = self._var_tabela.get() if hasattr(self, "_var_tabela") else "Padrão"
+        self.produtos.append({"codigo": codigo, "nome": nome, "preco": preco_fmt,
+                               "qtd": qtd, "tabela": nome_tabela})
         self._refresh_tree()
         self.lbl_status.config(text=f"'{nome[:30]}' adicionado ✓", style="StatusOk.TLabel")
         self.entry_cod.delete(0, "end")
@@ -3114,8 +3533,9 @@ class App:
             self.tree.delete(row)
         for i, p in enumerate(self.produtos):
             tag = "even" if i % 2 == 0 else "odd"
+            tabela = p.get("tabela", "Padrão")
             self.tree.insert("", "end",
-                              values=(p["codigo"], p["nome"], p["preco"], p["qtd"]),
+                              values=(p["codigo"], p["nome"], tabela, p["preco"], p["qtd"]),
                               tags=(tag,))
         self._atualizar_total()
         self._atualizar_preview_etiqueta()
@@ -3281,8 +3701,8 @@ class App:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.minsize(780, 800)
-    root.geometry("880x920")
+    root.minsize(1000, 860)
+    root.geometry("1100x940")
     app = App(root)
     root.update_idletasks()
     aplicar_cantos_arredondados_janela(root)

@@ -58,6 +58,7 @@ LAYOUT_PRESETS = {
                         "texto_fixo": {"ativo": False, "x_mm": 45.0, "y_mm": 1.0, "alinha": "center", "tamanho_mm": 2.5, "texto": ""},
             "barcode":    {"ativo": False, "y_mm": 22.0, "tamanho_mm": 5.0},
             "codigo":  {"ativo": False, "x_mm": 45.0, "y_mm": 26.5, "alinha": "center", "tamanho_mm": 2.5},
+            "tabela_preco": {"ativo": False, "x_mm": 45.0, "y_mm": 28.5, "alinha": "center", "tamanho_mm": 2.5},
         }
     },
     "2 Colunas": {
@@ -79,6 +80,7 @@ LAYOUT_PRESETS = {
                         "texto_fixo": {"ativo": False, "x_mm": 45.0, "y_mm": 1.0, "alinha": "center", "tamanho_mm": 2.5, "texto": ""},
             "barcode":    {"ativo": False, "y_mm": 22.0, "tamanho_mm": 5.0},
             "codigo":  {"ativo": False, "x_mm": 22.5, "y_mm": 26.5, "alinha": "center", "tamanho_mm": 2.5},
+            "tabela_preco": {"ativo": False, "x_mm": 22.5, "y_mm": 28.5, "alinha": "center", "tamanho_mm": 2.5},
         }
     },
     "3 Colunas": {
@@ -100,6 +102,7 @@ LAYOUT_PRESETS = {
                         "texto_fixo": {"ativo": False, "x_mm": 45.0, "y_mm": 1.0, "alinha": "center", "tamanho_mm": 2.5, "texto": ""},
             "barcode":    {"ativo": False, "y_mm": 22.0, "tamanho_mm": 5.0},
             "codigo":  {"ativo": False, "x_mm": 15.0, "y_mm": 26.0, "alinha": "center", "tamanho_mm": 2.0},
+            "tabela_preco": {"ativo": False, "x_mm": 15.0, "y_mm": 28.0, "alinha": "center", "tamanho_mm": 2.0},
         }
     },
     "Só Preço": {
@@ -121,6 +124,7 @@ LAYOUT_PRESETS = {
                         "texto_fixo": {"ativo": False, "x_mm": 45.0, "y_mm": 1.0, "alinha": "center", "tamanho_mm": 2.5, "texto": ""},
             "barcode":    {"ativo": False, "y_mm": 22.0, "tamanho_mm": 5.0},
             "codigo":  {"ativo": False, "x_mm": 45.0, "y_mm": 26.0, "alinha": "center", "tamanho_mm": 2.5},
+            "tabela_preco": {"ativo": False, "x_mm": 45.0, "y_mm": 28.0, "alinha": "center", "tamanho_mm": 2.5},
         }
     },
 }
@@ -518,10 +522,11 @@ def listar_impressoras():
     except Exception:
         return []
 
-def gerar_zpl(nome, preco, empresa, qtd=1, elementos=None, dims_mm=None, dpi=DPI_PADRAO, codigo=""):
+def gerar_zpl(nome, preco, empresa, qtd=1, elementos=None, dims_mm=None, dpi=DPI_PADRAO, codigo="", tabela_preco=""):
     empresa_zpl = remover_acentos(empresa).upper()[:30]
     nome_zpl    = remover_acentos(nome).upper()[:120]
     codigo_zpl  = remover_acentos(codigo).upper()[:20]
+    tabela_zpl  = remover_acentos(tabela_preco).upper()[:30]
     try:
         s = str(preco).replace("R$", "").strip()
         if "," in s and "." in s:
@@ -605,6 +610,14 @@ def gerar_zpl(nome, preco, empresa, qtd=1, elementos=None, dims_mm=None, dpi=DPI
             y = mm(txf.get("y_mm", 1.0))
             linhas_zpl.append(f"^FO0,{y}^FB{pw},1,0,{a},0^A0N,{s},{s}^FD{txt_val}^FS")
 
+    # tabela de preço
+    tab_el = el.get("tabela_preco", {})
+    if tab_el.get("ativo", False) and tabela_zpl:
+        a = alinha_map.get(tab_el.get("alinha", "center"), "C")
+        s = mm(tab_el.get("tamanho_mm", 2.5))
+        y = mm(tab_el.get("y_mm", 28.5))
+        linhas_zpl.append(f"^FO0,{y}^FB{pw},1,0,{a},0^A0N,{s},{s}^FD{tabela_zpl}^FS")
+
     lh_cmd  = f"^LH0,{lh_topo}" if lh_topo > 0 else "^LH0,0"
 
     corpo = "\n".join(linhas_zpl)
@@ -683,6 +696,7 @@ def _campos_produto_zpl(prod, empresa, el, mm_fn, col_w, x_off):
     nome_zpl    = remover_acentos(prod.get("nome", "—")).upper()[:120]
     preco_fmt   = _formatar_preco_str(prod.get("preco", "0"))
     codigo_zpl  = remover_acentos(prod.get("codigo", "")).upper()[:20]
+    tabela_zpl  = remover_acentos(prod.get("tabela", "")).upper()[:30]
 
     linhas = []
 
@@ -734,6 +748,13 @@ def _campos_produto_zpl(prod, empresa, el, mm_fn, col_w, x_off):
             s = mm_fn(txf.get("tamanho_mm", 2.5))
             y = mm_fn(txf.get("y_mm", 1.0))
             linhas.append(f"^FO{x_off},{y}^FB{col_w},1,0,{a},0^A0N,{s},{s}^FD{tv}^FS")
+
+    tab_el = el.get("tabela_preco", {})
+    if tab_el.get("ativo", False) and tabela_zpl:
+        a = alinha_map.get(tab_el.get("alinha", "center"), "C")
+        s = mm_fn(tab_el.get("tamanho_mm", 2.5))
+        y = mm_fn(tab_el.get("y_mm", 28.5))
+        linhas.append(f"^FO{x_off},{y}^FB{col_w},1,0,{a},0^A0N,{s},{s}^FD{tabela_zpl}^FS")
 
     return linhas
 
@@ -1011,7 +1032,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "3.0.7"
+_VERSION_BASE = "3.0.8"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1222,6 +1243,14 @@ class App:
         preset_nome = self.cfg.get("layout_preset", "1 Coluna")
         if saved:
             self._layout_elementos = saved
+            # Injeta elementos novos que podem não estar em layouts salvos antigos
+            import copy
+            _todos_elementos_novos = {
+                "tabela_preco": {"ativo": False, "x_mm": 45.0, "y_mm": 28.5, "alinha": "center", "tamanho_mm": 2.5},
+            }
+            for _k, _v in _todos_elementos_novos.items():
+                if _k not in self._layout_elementos:
+                    self._layout_elementos[_k] = copy.deepcopy(_v)
             self._dims_mm = {
                 "largura_mm":       float(self.cfg.get("largura_mm", 90.0)),
                 "altura_mm":        float(self.cfg.get("altura_mm",  30.0)),
@@ -1742,24 +1771,25 @@ class App:
 
     # Configuração visual dos elementos (todos presentes)
     _EDITOR_ELEM_CFG = {
-        "empresa":    {"label": "EMPRESA",      "cor": "#3D5AFE", "cor_txt": "white"},
-        "linha":      {"label": "── LINHA ──",  "cor": "#555555", "cor_txt": "white"},
-        "nome":       {"label": "Nome produto", "cor": "#1AA260", "cor_txt": "white"},
-        "preco":      {"label": "R$ Preço",     "cor": "#E4483F", "cor_txt": "white"},
-        "codigo":     {"label": "Código",       "cor": "#B98900", "cor_txt": "white"},
-        "texto_fixo": {"label": "Texto fixo",   "cor": "#9C27B0", "cor_txt": "white"},
-        "barcode":    {"label": "Cód. de barras",    "cor": "#212121", "cor_txt": "white"},
+        "empresa":      {"label": "EMPRESA",        "cor": "#3D5AFE", "cor_txt": "white"},
+        "linha":        {"label": "── LINHA ──",    "cor": "#555555", "cor_txt": "white"},
+        "nome":         {"label": "Nome produto",   "cor": "#1AA260", "cor_txt": "white"},
+        "preco":        {"label": "R$ Preço",       "cor": "#E4483F", "cor_txt": "white"},
+        "codigo":       {"label": "Código",         "cor": "#B98900", "cor_txt": "white"},
+        "texto_fixo":   {"label": "Texto fixo",     "cor": "#9C27B0", "cor_txt": "white"},
+        "barcode":      {"label": "Cód. de barras", "cor": "#212121", "cor_txt": "white"},
+        "tabela_preco": {"label": "Tab. Preço",     "cor": "#00838F", "cor_txt": "white"},
     }
 
-    # Nome amigável e step de tamanho para cada elemento
     _ELEM_INFO = {
-        "empresa":    {"nome": "Empresa",      "step_mm": 0.5},
-        "linha":      {"nome": "Linha sep.",   "step_mm": None},
-        "nome":       {"nome": "Nome produto", "step_mm": 0.5},
-        "preco":      {"nome": "Preço",        "step_mm": 1.0},
-        "codigo":     {"nome": "Código",       "step_mm": 0.5},
-        "texto_fixo": {"nome": "Texto fixo",   "step_mm": 0.5},
-        "barcode":    {"nome": "Cód. de barras","step_mm": 1.0, "tipo": "barcode"},
+        "empresa":      {"nome": "Empresa",        "step_mm": 0.5},
+        "linha":        {"nome": "Linha sep.",      "step_mm": None},
+        "nome":         {"nome": "Nome produto",   "step_mm": 0.5},
+        "preco":        {"nome": "Preço",          "step_mm": 1.0},
+        "codigo":       {"nome": "Código",         "step_mm": 0.5},
+        "texto_fixo":   {"nome": "Texto fixo",     "step_mm": 0.5},
+        "barcode":      {"nome": "Cód. de barras", "step_mm": 1.0, "tipo": "barcode"},
+        "tabela_preco": {"nome": "Tab. de Preço",  "step_mm": 0.5},
     }
 
     def _build_aba_personalizacao(self, frm):
@@ -1891,8 +1921,16 @@ class App:
         self._elem_tam_vars   = {}
 
         for row_i, (key, info) in enumerate(self._ELEM_INFO.items(), start=1):
-            elem_cfg = self._layout_elementos.get(key, {})
-            cfg_visual = self._EDITOR_ELEM_CFG[key]
+            # Garante que elementos novos (não presentes em layouts salvos) têm config padrão
+            if key not in self._layout_elementos:
+                preset_atual = self._dims_mm.get("__preset__", "2 Colunas")
+                preset_elem  = LAYOUT_PRESETS.get(preset_atual, {}).get("elementos", {})
+                self._layout_elementos[key] = preset_elem.get(key, {
+                    "ativo": False, "x_mm": 0.0, "y_mm": 28.0,
+                    "alinha": "center", "tamanho_mm": 2.5
+                })
+            elem_cfg   = self._layout_elementos.get(key, {})
+            cfg_visual = self._EDITOR_ELEM_CFG.get(key, {"cor": "#888888", "cor_txt": "white"})
 
             # nome com cor
             name_frm = tk.Frame(tbl, bg=COR["surface"])
@@ -3679,6 +3717,7 @@ class App:
                         dims_mm=self._dims_mm,
                         dpi=self._dpi,
                         codigo=p.get("codigo", ""),
+                        tabela_preco=p.get("tabela", ""),
                     )
                     imprimir_zpl(zpl, impressora)
                     total_enviado += p["qtd"]

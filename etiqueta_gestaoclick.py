@@ -1009,7 +1009,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "3.0.4"
+_VERSION_BASE = "2.0.3"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1521,7 +1521,7 @@ class App:
         ttk.Label(self._frm_tabela, text="TABELA DE PREÇO", style="SectionTitle.TLabel",
                   background=COR["surface2"]).pack(side="left", padx=(0, 8))
 
-        self._var_tabela = tk.StringVar(value="Padrão (valor_venda)")
+        self._var_tabela = tk.StringVar(value=self._nome_tabela_padrao())
         self._combo_tabela = ttk.Combobox(
             self._frm_tabela,
             textvariable=self._var_tabela,
@@ -2836,27 +2836,45 @@ class App:
         self._apelido_vars = {}
         apelidos_salvos = self.cfg.get("tabelas_apelidos", {})
 
-        # Pega os tipo_ids conhecidos do cache atual
-        tabelas_conhecidas = [t["id"] for t in self._tabelas_preco]
+        row = 0
 
-        # Também inclui ids que já têm apelido salvo mas podem não estar no cache ainda
+        # ── Campo especial: nome da tabela padrão (valor_venda) ──
+        ttk.Label(self._frm_apelidos, text="Tabela padrão:", style="Muted.TLabel").grid(
+            row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        var_padrao = tk.StringVar(value=apelidos_salvos.get("__padrao__", "Padrão (valor_venda)"))
+        ttk.Entry(self._frm_apelidos, textvariable=var_padrao, width=22).grid(
+            row=row, column=1, sticky="w", pady=3)
+        ttk.Label(self._frm_apelidos,
+                  text="← nome do valor_venda (ex: Atacado)",
+                  style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(6, 0))
+        self._apelido_vars["__padrao__"] = var_padrao
+        row += 1
+
+        # ── Separador ──
+        ttk.Separator(self._frm_apelidos, orient="horizontal").grid(
+            row=row, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+        row += 1
+
+        # ── Campos das tabelas por tipo_id ──
+        tabelas_conhecidas = [t["id"] for t in self._tabelas_preco]
         for tid in apelidos_salvos:
-            if tid not in tabelas_conhecidas:
+            if tid not in tabelas_conhecidas and tid != "__padrao__":
                 tabelas_conhecidas.append(tid)
 
         if not tabelas_conhecidas:
             ttk.Label(self._frm_apelidos,
                       text="Nenhuma tabela encontrada — sincronize os produtos primeiro.",
-                      style="Muted.TLabel").grid(row=0, column=0, columnspan=2)
+                      style="Muted.TLabel").grid(row=row, column=0, columnspan=3)
             return
 
-        for i, tid in enumerate(tabelas_conhecidas):
+        for tid in tabelas_conhecidas:
             ttk.Label(self._frm_apelidos, text=f"ID {tid}:", style="Muted.TLabel").grid(
-                row=i, column=0, sticky="w", padx=(0, 8), pady=3)
+                row=row, column=0, sticky="w", padx=(0, 8), pady=3)
             var = tk.StringVar(value=apelidos_salvos.get(tid, ""))
             ttk.Entry(self._frm_apelidos, textvariable=var, width=22).grid(
-                row=i, column=1, sticky="w", pady=3)
+                row=row, column=1, sticky="w", pady=3)
             self._apelido_vars[tid] = var
+            row += 1
 
     def _on_modo_fonte_change(self):
         modo = self._var_modo_fonte.get()
@@ -3030,18 +3048,23 @@ class App:
                   style="Muted.TLabel", wraplength=580).pack(padx=18, pady=(0, 10))
         ttk.Button(win, text="Fechar", command=win.destroy).pack(pady=(0, 14))
 
+    def _nome_tabela_padrao(self):
+        """Retorna o nome configurado para a tabela padrão (valor_venda)."""
+        return self.cfg.get("tabelas_apelidos", {}).get("__padrao__", "Padrão (valor_venda)") or "Padrão (valor_venda)"
+
     def _atualizar_combo_tabelas(self):
         """Preenche o combobox com as tabelas de preço carregadas."""
-        opcoes = ["Padrão (valor_venda)"] + [t["nome"] for t in self._tabelas_preco]
+        padrao = self._nome_tabela_padrao()
+        opcoes = [padrao] + [t["nome"] for t in self._tabelas_preco]
         if hasattr(self, "_combo_tabela"):
             self._combo_tabela["values"] = opcoes
             if self._var_tabela.get() not in opcoes:
-                self._var_tabela.set("Padrão (valor_venda)")
+                self._var_tabela.set(padrao)
 
     def _tabela_selecionada_id(self):
-        """Retorna o id da tabela selecionada, ou None se for 'Padrão'."""
+        """Retorna o id da tabela selecionada, ou None se for a tabela padrão."""
         sel = self._var_tabela.get()
-        if sel == "Padrão (valor_venda)" or not sel:
+        if not sel or sel == self._nome_tabela_padrao():
             return None
         for t in self._tabelas_preco:
             if t["nome"] == sel:
@@ -3118,6 +3141,11 @@ class App:
             for t in self._tabelas_preco:
                 if t["id"] in apelidos_completos and apelidos_completos[t["id"]]:
                     t["nome"] = apelidos_completos[t["id"]]
+            # Atualiza o valor atual do combobox se estava no padrão antigo
+            padrao_novo = self._nome_tabela_padrao()
+            opcoes_atuais = list(self._combo_tabela["values"]) if hasattr(self, "_combo_tabela") else []
+            if opcoes_atuais and self._var_tabela.get() == opcoes_atuais[0]:
+                self._var_tabela.set(padrao_novo)
             self._atualizar_combo_tabelas()
         salvar_config(self.cfg)
         messagebox.showinfo("Salvo", "Configurações salvas!")

@@ -476,6 +476,16 @@ def sincronizar_produtos(api_base_url, access_token, secret_token, progress_q, c
         "total_registros": total_registros,
     }
     salvar_cache(produtos_por_codigo, meta_final)
+
+    # LOG DIAGNÓSTICO: todos os tipo_ids únicos encontrados no cache completo
+    todos_tipos = {}
+    for prod in produtos_por_codigo.values():
+        for v in prod.get("valores", []):
+            tid = str(v.get("tipo_id", "")).strip()
+            if tid and tid not in todos_tipos:
+                todos_tipos[tid] = v  # guarda o dict completo do primeiro encontrado
+    registrar_erro("DIAG_TODOS_TIPOS", f"tipo_ids no cache completo: {sorted(todos_tipos.keys())} | exemplo primeiro: {json.dumps(list(todos_tipos.values())[:1], ensure_ascii=False)[:300]}")
+
     progress_q.put(("concluido", (len(produtos_por_codigo), meta_final["atualizado_em"])))
 
 
@@ -1009,7 +1019,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "3.0.5"
+_VERSION_BASE = "3.0.6"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")

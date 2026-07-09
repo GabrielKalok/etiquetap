@@ -73,7 +73,7 @@ LAYOUT_PRESETS = {
         "cartela_base_mm": 0.0,
         "gap_col_mm":      0.0,
         "elementos": {
-            "empresa": {"ativo": True,  "x_mm": 22.5, "y_mm": 1.7,  "alinha": "center", "tamanho_mm": 3.5},
+            "empresa": {"ativo": True,  "x_mm": 22.5, "y_mm": 1.7,  "alinha": "center", "tamanho_mm": 3.5, "centralizada": False},
             "linha":   {"ativo": True,  "x_mm": 0.0,  "y_mm": 6.5,  "visivel": True},
             "nome":    {"ativo": True,  "x_mm": 22.5, "y_mm": 8.2,  "alinha": "center", "tamanho_mm": 2.7},
             "preco":   {"ativo": True,  "x_mm": 22.5, "y_mm": 12.5, "alinha": "center", "tamanho_mm": 11.2},
@@ -95,7 +95,7 @@ LAYOUT_PRESETS = {
         "cartela_base_mm": 0.0,
         "gap_col_mm":      0.0,
         "elementos": {
-            "empresa": {"ativo": True,  "x_mm": 15.0, "y_mm": 1.5,  "alinha": "center", "tamanho_mm": 2.7},
+            "empresa": {"ativo": True,  "x_mm": 15.0, "y_mm": 1.5,  "alinha": "center", "tamanho_mm": 2.7, "centralizada": False},
             "linha":   {"ativo": True,  "x_mm": 0.0,  "y_mm": 6.0,  "visivel": True},
             "nome":    {"ativo": True,  "x_mm": 15.0, "y_mm": 7.2,  "alinha": "center", "tamanho_mm": 2.2},
             "preco":   {"ativo": True,  "x_mm": 15.0, "y_mm": 11.0, "alinha": "center", "tamanho_mm": 9.0},
@@ -701,7 +701,7 @@ def _campos_produto_zpl(prod, empresa, el, mm_fn, col_w, x_off):
     linhas = []
 
     emp = el.get("empresa", {})
-    if emp.get("ativo", True):
+    if emp.get("ativo", True) and not emp.get("centralizada", False):
         a = alinha_map.get(emp.get("alinha", "center"), "C")
         s = mm_fn(emp.get("tamanho_mm", 4.0))
         y = mm_fn(emp.get("y_mm", 1.7))
@@ -797,6 +797,16 @@ def gerar_zpl_multicol(batch, empresa, dims_mm, elementos, dpi=DPI_PADRAO, num_c
     col_w = (pw - (num_col_cfg - 1) * gap_w) // num_col_cfg
 
     linhas_zpl = []
+
+    # Empresa centralizada (ocupa toda a largura do papel, renderizada uma vez)
+    emp_el = elementos.get("empresa", {})
+    if emp_el.get("ativo", True) and emp_el.get("centralizada", False):
+        empresa_zpl = remover_acentos(empresa).upper()[:30]
+        a = {"left": "L", "center": "C", "right": "R"}.get(emp_el.get("alinha", "center"), "C")
+        s = mm(emp_el.get("tamanho_mm", 4.0))
+        y = mm(emp_el.get("y_mm", 1.7))
+        linhas_zpl.append(f"^FO0,{y}^FB{pw},1,0,{a},0^A0N,{s},{s}^FD{empresa_zpl}^FS")
+
     for col_idx, prod in enumerate(batch):
         if prod is None:
             continue   # coluna vazia: espaço reservado mas sem conteúdo
@@ -1032,7 +1042,7 @@ def salvar_layouts_salvos(d):
         json.dump(d, f, indent=2, ensure_ascii=False)
 
 
-_VERSION_BASE = "3.0.8"
+_VERSION_BASE = "3.0.9"
 VERSION_URL   = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/version.json"
 DOWNLOAD_URL  = "https://raw.githubusercontent.com/GabrielKalok/etiquetap/main/etiqueta_gestaoclick.py"
 _VERSION_FILE = os.path.join(BASE_DIR, "version_local.json")
@@ -1251,6 +1261,9 @@ class App:
             for _k, _v in _todos_elementos_novos.items():
                 if _k not in self._layout_elementos:
                     self._layout_elementos[_k] = copy.deepcopy(_v)
+            # Injeta campos novos em elementos existentes
+            if "centralizada" not in self._layout_elementos.get("empresa", {}):
+                self._layout_elementos.setdefault("empresa", {})["centralizada"] = False
             self._dims_mm = {
                 "largura_mm":       float(self.cfg.get("largura_mm", 90.0)),
                 "altura_mm":        float(self.cfg.get("altura_mm",  30.0)),
@@ -1917,8 +1930,9 @@ class App:
                      font=("Segoe UI Semibold", 8), padx=8, pady=4,
                      relief="flat").grid(row=0, column=c, sticky="ew", padx=2, pady=(0, 4))
 
-        self._elem_ativo_vars = {}
-        self._elem_tam_vars   = {}
+        self._elem_ativo_vars      = {}
+        self._elem_tam_vars        = {}
+        self._elem_centralizada_var = None  # só para empresa
 
         for row_i, (key, info) in enumerate(self._ELEM_INFO.items(), start=1):
             # Garante que elementos novos (não presentes em layouts salvos) têm config padrão
@@ -1979,6 +1993,20 @@ class App:
                     entry_txt.bind("<KeyRelease>", lambda e, k=key: self._on_texto_fixo_change(k))
                     tk.Label(tbl, text="texto", bg=COR["surface"], fg=COR["muted"],
                              font=("Segoe UI", 7)).grid(row=0, column=3, sticky="w", padx=(8,0))
+
+                # checkbox "Centralizar" para empresa (multi-coluna)
+                if key == "empresa":
+                    var_cent = tk.BooleanVar(value=bool(elem_cfg.get("centralizada", False)))
+                    self._elem_centralizada_var = var_cent
+                    frm_cent = tk.Frame(tbl, bg=COR["surface"])
+                    frm_cent.grid(row=row_i, column=3, padx=(10, 0), pady=3, sticky="w")
+                    ttk.Checkbutton(frm_cent, variable=var_cent,
+                                    command=self._on_empresa_centralizada).pack(side="left")
+                    tk.Label(frm_cent, text="Centralizar entre colunas",
+                             bg=COR["surface"], fg=COR["muted"],
+                             font=("Segoe UI", 8)).pack(side="left", padx=(3, 0))
+                    tk.Label(tbl, text="opções", bg=COR["surface"], fg=COR["muted"],
+                             font=("Segoe UI", 7)).grid(row=0, column=3, sticky="w", padx=(10, 0))
             else:
                 # linha: apenas toggle de visível (sem tamanho)
                 tk.Label(tbl, text="—", bg=COR["surface"], fg=COR["muted"],
@@ -2111,6 +2139,17 @@ class App:
         salvar_layouts_salvos(self._layouts_salvos)
         self._atualizar_combo_layouts()
         messagebox.showinfo("Excluído", f"Layout '{nome}' removido.")
+
+    def _on_empresa_centralizada(self):
+        """Salva a opção de empresa centralizada e atualiza o preview."""
+        if "empresa" not in self._layout_elementos:
+            self._layout_elementos["empresa"] = {}
+        self._layout_elementos["empresa"]["centralizada"] = bool(
+            self._elem_centralizada_var.get() if self._elem_centralizada_var else False
+        )
+        self._salvar_layout()
+        self._redesenhar_editor_com_dims()
+        self._atualizar_preview_etiqueta()
 
     def _on_elem_visibilidade(self, key):
         ativo = self._elem_ativo_vars[key].get()
@@ -2369,12 +2408,18 @@ class App:
             elem  = el.get(key, {})
             ativo = elem.get("ativo", True)
             if not ativo:
-                continue   # ← DESATIVADO: não aparece
+                continue
 
-            for col in range(num_col):
-                x_off_col = lx0 + col * col_step  # offset X do início desta coluna
+            # Empresa centralizada: desenha uma vez sobre toda a largura
+            empresa_centralizada = (key == "empresa" and elem.get("centralizada", False))
+            cols_a_desenhar = [0] if empresa_centralizada else range(num_col)
+
+            for col in cols_a_desenhar:
+                x_off_col = lx0 + col * col_step
                 is_first  = (col == 0)
                 drag_tag  = (f"drag_{key}",) if is_first else ()
+                # Largura efetiva: papel todo se centralizada, coluna se não
+                blk_w_ref = lx0 + num_col * col_step - lx0 if empresa_centralizada else lw_px
 
                 if key == "linha":
                     y_mm = float(elem.get("y_mm", 6.5))
@@ -2396,11 +2441,10 @@ class App:
                     x_mm   = float(elem.get("x_mm", label_mm/2))
                     y_mm   = float(elem.get("y_mm", 5.0))
                     tam_mm = float(elem.get("tamanho_mm", 3.0))
-                    x_px   = int(x_off_col + x_mm * sx)
+                    x_px   = int(x_off_col + x_mm * sx) if not empresa_centralizada else int(lx0 + blk_w_ref / 2)
                     y_px   = int(ly0 + y_mm * sy)
-                    # Bloco com altura PROPORCIONAL ao tamanho_mm
                     blk_h  = max(10, int(tam_mm * sy))
-                    blk_w  = max(30, int(lw_px * 0.7))
+                    blk_w  = max(30, int(blk_w_ref * 0.7))
                     x1b, y1b = x_px - blk_w//2, y_px
                     x2b, y2b = x_px + blk_w//2, y_px + blk_h
                     rect = c.create_rectangle(x1b, y1b, x2b, y2b,
@@ -2599,9 +2643,9 @@ class App:
                 c.create_rectangle(x_off, 0, x_off + col_w_px, ph,
                                    outline="#D4B800", fill="", width=1)
 
-            # ── Empresa ──
+            # ── Empresa (só se NÃO centralizada) ──
             emp = el.get("empresa", {})
-            if emp.get("ativo", True):
+            if emp.get("ativo", True) and not emp.get("centralizada", False):
                 c.create_text(ex(emp,larg_mm/2), ey(emp,1.7), text=empresa,
                                anchor=ea(emp), font=("Arial", ef(emp,4), "bold"),
                                fill="#000000", width=int(col_w_px*0.95))
@@ -2667,6 +2711,13 @@ class App:
                 c.create_text((x1_b+x2_b)/2, y_b+h_b+2,
                                text=cod_txt, font=("Courier", max(5, int(h_b*0.28))),
                                fill="#000000", anchor="n")
+
+        # Empresa centralizada — desenhada uma vez sobre toda a largura do papel
+        emp = el.get("empresa", {})
+        if emp.get("ativo", True) and emp.get("centralizada", False):
+            c.create_text(pw / 2, ey(emp, 1.7), text=empresa,
+                           anchor="n", font=("Arial", ef(emp, 4), "bold"),
+                           fill="#000000", width=int(pw * 0.95))
 
         # Renderizar todas as colunas
         for col in range(num_col):
